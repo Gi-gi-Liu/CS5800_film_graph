@@ -1,13 +1,11 @@
 """
-benchmark.py — Timing and memory benchmarks comparing Dijkstra vs Greedy.
+benchmark.py — Simple runtime comparison between Dijkstra and Greedy.
 
-Metrics collected:
-  - Wall-clock time in milliseconds (time.perf_counter).
-  - Approximate memory in KB (sys.getsizeof on key data structures).
-  - Number of nodes visited / settled by Dijkstra.
-  - Optimality gap: (greedy_cost - dijkstra_lower_bound) / dijkstra_lower_bound.
+Times both algorithms on the same generated graphs as size grows, and prints
+the greedy schedule for the standard 8-scene film benchmark. All graphs come
+from data_gen.py's seeded generators, so every run is reproducible.
 
-Run directly to execute all benchmarks and print formatted tables:
+Run directly:
     python benchmark.py
 """
 
@@ -15,263 +13,60 @@ from __future__ import annotations
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import time
-from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from dataclasses import dataclass
+from typing import List, Optional
 
-from graph import SpatialGraph
 from data_gen import generate_sparse_graph, create_film_benchmark
-from dijkstra import (dijkstra, all_pairs_shortest_paths,
-                      all_pairs_results, DijkstraResult, INF)
-from greedy import greedy_nearest_neighbor, GreedyResult
+from dijkstra import dijkstra, shortest_path, all_pairs_shortest_paths
+from greedy import greedy_nearest_neighbor
 
-
-# ---------------------------------------------------------------------------
-# Result containers
-# ---------------------------------------------------------------------------
 
 @dataclass
-class BenchmarkResult:
-    """
-    Statistics for a single algorithm run on a single graph size.
-
-    Attributes:
-        algo_name    : Human-readable algorithm identifier.
-        n_nodes      : Number of graph nodes.
-        time_ms      : Wall-clock time in milliseconds.
-        memory_kb    : Approximate peak memory used (KB), estimated via sys.getsizeof.
-        visited_nodes: Nodes settled (Dijkstra) or scenes visited (Greedy).
-        optimality_gap: Relative gap vs Dijkstra lower bound (0.0 for Dijkstra itself).
-    """
+class TimingResult:
+    """Wall-clock time (ms) for one algorithm run at one graph size."""
     algo_name: str
     n_nodes: int
     time_ms: float
-    memory_kb: float
-    visited_nodes: int
-    optimality_gap: float = 0.0
-
-    def row(self) -> str:
-        """Format as a fixed-width table row."""
-        gap_str = f"{self.optimality_gap * 100:.2f}%" if self.optimality_gap else "  N/A"
-        return (f"  {self.algo_name:<22s}  {self.n_nodes:>7d}  "
-                f"{self.time_ms:>10.2f}  {self.memory_kb:>10.1f}  "
-                f"{self.visited_nodes:>14d}  {gap_str:>12s}")
-
-
-def _header() -> str:
-    return (f"  {'Algorithm':<22s}  {'N Nodes':>7s}  "
-            f"{'Time (ms)':>10s}  {'Memory KB':>10s}  "
-            f"{'Visited Nodes':>14s}  {'Optimality Gap':>12s}")
-
-
-def _separator() -> str:
-    return "  " + "-" * 88
 
 
 # ---------------------------------------------------------------------------
-# Memory estimation helpers
+# Timing benchmarks
 # ---------------------------------------------------------------------------
 
-def _sizeof_list2d(lst: List[List[float]]) -> int:
-    """Approximate bytes used by a 2-D list of floats."""
-    total = sys.getsizeof(lst)
-    for row in lst:
-        total += sys.getsizeof(row)
-        total += len(row) * 8  # 8 bytes per float
-    return total
-
-
-def _sizeof_dijkstra_result(result: DijkstraResult) -> int:
-    """Approximate bytes used by a single DijkstraResult."""
-    return (sys.getsizeof(result)
-            + sys.getsizeof(result.dist) + len(result.dist) * 8
-            + sys.getsizeof(result.prev) + len(result.prev) * 8)
-
-
-# ---------------------------------------------------------------------------
-# Dijkstra benchmark
-# ---------------------------------------------------------------------------
-
-def run_dijkstra_benchmark(
-        sizes: Optional[List[int]] = None,
-        all_pairs_threshold: int = 1000) -> List[BenchmarkResult]:
-    """
-    Benchmark Dijkstra on sparse graphs of increasing size.
-
-    For sizes up to *all_pairs_threshold*:
-        Runs all_pairs_shortest_paths (one Dijkstra per source).
-    For sizes above the threshold:
-        Runs a single-source Dijkstra and extrapolates time to approximate
-        all-pairs cost, keeping the benchmark practical for n=5000/10000.
-
-    Args:
-        sizes               : List of node counts to test.
-                              Default: [10, 50, 100, 500, 1000, 5000, 10000].
-        all_pairs_threshold : Maximum n for which all-pairs is run in full.
-
-    Returns:
-        List of BenchmarkResult, one per size.
-    """
-    if sizes is None:
-        sizes = [10, 50, 100, 500, 1000, 5000, 10000]
-
-    results: List[BenchmarkResult] = []
+def run_dijkstra_benchmark(sizes: Optional[List[int]] = None) -> List[TimingResult]:
+    """Time all-pairs Dijkstra on sparse graphs of increasing size."""
+    sizes = sizes or [10, 50, 100, 500]
+    results = []
     for n in sizes:
         graph = generate_sparse_graph(n, edge_prob=0.05, seed=n)
-
-        if n <= all_pairs_threshold:
-            # Full all-pairs run
-            t0 = time.perf_counter()
-            cost_matrix = all_pairs_shortest_paths(graph)
-            t1 = time.perf_counter()
-            time_ms = (t1 - t0) * 1000.0
-            mem_kb = _sizeof_list2d(cost_matrix) / 1024.0
-            single = dijkstra(graph, 0)
-            total_visited = single.visited_count * n  # approximate
-            algo_name = "Dijkstra (all-pairs)"
-        else:
-            # Single-source run; extrapolate for all-pairs estimate
-            t0 = time.perf_counter()
-            single = dijkstra(graph, 0)
-            t1 = time.perf_counter()
-            single_ms = (t1 - t0) * 1000.0
-            time_ms = single_ms * n  # extrapolated all-pairs time
-            # Memory: n×n cost matrix (estimated)
-            mem_kb = (n * n * 8) / 1024.0
-            total_visited = single.visited_count * n
-            algo_name = "Dijkstra (all-pairs,est)"
-
-        results.append(BenchmarkResult(
-            algo_name=algo_name,
-            n_nodes=n,
-            time_ms=time_ms,
-            memory_kb=mem_kb,
-            visited_nodes=total_visited,
-            optimality_gap=0.0,
-        ))
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Greedy benchmark
-# ---------------------------------------------------------------------------
-
-def run_greedy_benchmark(
-        sizes: Optional[List[int]] = None) -> List[BenchmarkResult]:
-    """
-    Benchmark the greedy nearest-neighbor heuristic on sparse graphs.
-
-    For each size:
-        1. Generate sparse graph.
-        2. Compute all-pairs Dijkstra cost matrix (preprocessing, not counted).
-        3. Time the greedy nearest-neighbor run over all nodes.
-        4. Record time, memory (cost matrix + GreedyResult), visited count.
-
-    Args:
-        sizes: List of node counts.  Default: [10, 50, 100, 500, 1000].
-
-    Returns:
-        List of BenchmarkResult, one per size.
-    """
-    if sizes is None:
-        sizes = [10, 50, 100, 500, 1000]
-
-    results: List[BenchmarkResult] = []
-    for n in sizes:
-        graph = generate_sparse_graph(n, edge_prob=0.05, seed=n)
-        # Precompute cost matrix (not timed — this is Dijkstra's responsibility)
-        cost_matrix = all_pairs_shortest_paths(graph)
-
         t0 = time.perf_counter()
-        greedy_res = greedy_nearest_neighbor(cost_matrix, start=0)
+        all_pairs_shortest_paths(graph)
         t1 = time.perf_counter()
-
-        time_ms = (t1 - t0) * 1000.0
-        mem_kb = (_sizeof_list2d(cost_matrix)
-                  + sys.getsizeof(greedy_res.order) * len(greedy_res.order) * 8
-                  ) / 1024.0
-
-        results.append(BenchmarkResult(
-            algo_name="Greedy NearestNeighbor",
-            n_nodes=n,
-            time_ms=time_ms,
-            memory_kb=mem_kb,
-            visited_nodes=len(greedy_res.order),
-            optimality_gap=0.0,  # filled in by compare_optimality
-        ))
-
+        results.append(TimingResult("Dijkstra (all-pairs)", n, (t1 - t0) * 1000.0))
     return results
 
 
-# ---------------------------------------------------------------------------
-# Optimality gap comparison
-# ---------------------------------------------------------------------------
-
-def compare_optimality(graph: SpatialGraph,
-                       scene_indices: List[int]) -> Dict[str, float]:
-    """
-    Compare the greedy schedule cost against a Dijkstra-based lower bound.
-
-    Lower bound construction:
-        For each consecutive pair in the greedy order, the shortest-path cost
-        (from Dijkstra) gives the minimum possible transition cost.  The sum of
-        all n−1 minimum-cost transitions is a lower bound on any tour visiting
-        all scenes.
-
-        Note: this is a *relaxed* lower bound because it ignores ordering
-        constraints.  The true optimum (TSP) is NP-hard; Dijkstra gives us the
-        pairwise minimum transition costs.
-
-    Args:
-        graph        : The SpatialGraph to analyse.
-        scene_indices: Node indices of the scenes to be filmed.
-
-    Returns:
-        Dict with keys:
-            'greedy_cost'       : Total cost from the greedy heuristic.
-            'dijkstra_lb'       : Dijkstra-based lower bound.
-            'optimality_gap'    : (greedy - lb) / lb  (relative gap, 0..∞).
-            'optimality_gap_pct': Gap as percentage.
-    """
-    cost_matrix = all_pairs_shortest_paths(graph)
-    greedy_res = greedy_nearest_neighbor(cost_matrix, start=scene_indices[0],
-                                         scene_indices=scene_indices)
-    greedy_cost = greedy_res.total_cost
-
-    # Lower bound: sum of cheapest outgoing edges from each scene (except last)
-    lb = 0.0
-    for i, u in enumerate(scene_indices[:-1]):
-        # Cheapest way to reach *any* other scene in the set
-        remaining = [v for v in scene_indices if v != u]
-        best = min(cost_matrix[u][v] for v in remaining
-                   if cost_matrix[u][v] < INF)
-        lb += best
-
-    gap = (greedy_cost - lb) / lb if lb > 0 else 0.0
-
-    return {
-        "greedy_cost": greedy_cost,
-        "dijkstra_lb": lb,
-        "optimality_gap": gap,
-        "optimality_gap_pct": gap * 100.0,
-    }
+def run_greedy_benchmark(sizes: Optional[List[int]] = None) -> List[TimingResult]:
+    """Time the greedy nearest-neighbor heuristic (cost matrix precomputed, not timed)."""
+    sizes = sizes or [10, 50, 100, 500]
+    results = []
+    for n in sizes:
+        graph = generate_sparse_graph(n, edge_prob=0.05, seed=n)
+        cost_matrix = all_pairs_shortest_paths(graph)
+        t0 = time.perf_counter()
+        greedy_nearest_neighbor(cost_matrix, start=0)
+        t1 = time.perf_counter()
+        results.append(TimingResult("Greedy NearestNeighbor", n, (t1 - t0) * 1000.0))
+    return results
 
 
-# ---------------------------------------------------------------------------
-# Formatted table printing
-# ---------------------------------------------------------------------------
-
-def print_table(results: List[BenchmarkResult], title: str = "") -> None:
-    """Print a formatted benchmark table to stdout."""
-    if title:
-        print(f"\n{'='*90}")
-        print(f"  {title}")
-        print(f"{'='*90}")
-    print(_header())
-    print(_separator())
+def print_table(results: List[TimingResult], title: str) -> None:
+    """Print a simple formatted timing table."""
+    print(f"\n{title}")
+    print(f"  {'Algorithm':<22s}  {'N Nodes':>7s}  {'Time (ms)':>10s}")
+    print("  " + "-" * 43)
     for r in results:
-        print(r.row())
-    print()
+        print(f"  {r.algo_name:<22s}  {r.n_nodes:>7d}  {r.time_ms:>10.2f}")
 
 
 # ---------------------------------------------------------------------------
@@ -279,56 +74,32 @@ def print_table(results: List[BenchmarkResult], title: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("\n" + "=" * 90)
-    print("  CS5800 Film Location Scheduling — Liu's Algorithm Benchmarks")
-    print("=" * 90)
+    print("=" * 60)
+    print("  CS5800 Film Location Scheduling — Liu's Benchmarks")
+    print("=" * 60)
 
-    # ---- 1. Dijkstra all-pairs benchmark ----
-    print("\nRunning Dijkstra all-pairs benchmark...")
-    print("  (n <= 1000: full all-pairs run; n > 1000: single-source * n extrapolation)")
-    dijk_results = run_dijkstra_benchmark(
-        sizes=[10, 50, 100, 500, 1000, 5000, 10000],
-        all_pairs_threshold=1000)
-    print_table(dijk_results, "Dijkstra All-Pairs Shortest Paths")
+    sizes = [10, 50, 100, 500]
+    print_table(run_dijkstra_benchmark(sizes), "Dijkstra All-Pairs Shortest Paths")
+    print_table(run_greedy_benchmark(sizes), "Greedy Nearest-Neighbor Schedule")
 
-    # ---- 2. Greedy benchmark ----
-    print("Running Greedy Nearest-Neighbor benchmark...")
-    greedy_results = run_greedy_benchmark(sizes=[10, 50, 100, 500, 1000])
-    print_table(greedy_results, "Greedy Nearest-Neighbor Schedule")
-
-    # ---- 3. Optimality gap comparison on film benchmarks ----
-    print("=" * 90)
-    print("  Optimality Gap: Greedy vs Dijkstra Lower Bound")
-    print("=" * 90)
-    print(f"  {'Graph':<20s}  {'Greedy Cost':>12s}  "
-          f"{'Dijkstra LB':>12s}  {'Gap %':>10s}")
-    print("  " + "-" * 62)
-
-    for n_sc in [6, 8, 10, 12]:
-        graph = create_film_benchmark(n_sc)
-        scenes = list(range(n_sc))
-        gap_info = compare_optimality(graph, scenes)
-        print(f"  film_benchmark_{n_sc:<5d}  "
-              f"{gap_info['greedy_cost']:>12.2f}  "
-              f"{gap_info['dijkstra_lb']:>12.2f}  "
-              f"{gap_info['optimality_gap_pct']:>9.2f}%")
-
-    print()
-    print("  Note: Dijkstra LB is a relaxed lower bound (sum of cheapest")
-    print("  per-node outgoing costs); true TSP optimum may be higher.")
-    print()
-
-    # ---- 4. Single-source Dijkstra stats on a mid-size graph ----
-    print("=" * 90)
-    print("  Single-Source Dijkstra Statistics (n=100, source=0)")
-    print("=" * 90)
-    g100 = generate_sparse_graph(100, edge_prob=0.05, seed=7)
+    # ---- Single-source stats on the 8-scene film benchmark ----
+    fb = create_film_benchmark(8)
+    print("\nDijkstra Single-Source Stats (8-scene benchmark, source=0)")
     t0 = time.perf_counter()
-    res = dijkstra(g100, 0)
+    r = dijkstra(fb, 0)
     t1 = time.perf_counter()
-    print(f"  Nodes visited  : {res.visited_count}")
-    print(f"  Heap ops       : {res.heap_ops}")
-    print(f"  Time           : {(t1-t0)*1000:.3f} ms")
-    reachable = sum(1 for d in res.dist if d < INF)
-    print(f"  Reachable nodes: {reachable} / {g100.n}")
+    path, cost = shortest_path(fb, 0, fb.n - 1)
+    print(f"  Nodes visited : {r.visited_count}")
+    print(f"  Heap pushes   : {r.heap_pushes}")
+    print(f"  Time          : {(t1 - t0) * 1000:.3f} ms")
+    print(f"  Path 0 -> {fb.n - 1}     : {path}, cost={cost:.2f}")
+
+    # ---- Greedy schedule for the 8-scene film benchmark ----
+    print("\n8-Scene Film Benchmark — Greedy Schedule")
+    cost_matrix = all_pairs_shortest_paths(fb)
+    result = greedy_nearest_neighbor(cost_matrix, start=0)
+    print(f"  Step 0: {fb.nodes[result.order[0]].name:<16s} [START]")
+    for i, node in enumerate(result.order[1:]):
+        print(f"  Step {i + 1}: {fb.nodes[node].name:<16s} +{result.cost_breakdown[i]:.2f}")
+    print(f"  TOTAL COST: {result.total_cost:.2f}")
     print()

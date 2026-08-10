@@ -44,11 +44,11 @@ All edges are stored in an **adjacency matrix**: 0 means no direct route, any po
 
 ### [SLIDE 4 — Algorithms: Dijkstra & Greedy] (~90 seconds)
 
-"I implemented two algorithms from scratch — no external graph libraries.
+"I implemented two algorithms — no external graph libraries, just Python's standard library.
 
-**Algorithm 1: Dijkstra's shortest path with a custom min-heap.**
+**Algorithm 1: Dijkstra's shortest path using Python's `heapq`.**
 
-I built the min-heap as a list-based binary tree with sift-up and sift-down from scratch. Decrease-key is handled via lazy deletion — when I find a shorter path, I push the new entry and skip the stale one when it's popped. This avoids the complexity of a Fibonacci heap while still achieving O((V + E) log V) per source.
+`heapq` gives me a standard binary heap as the priority queue. Decrease-key is handled via lazy deletion — when I find a shorter path, I push the new entry and skip the stale one when it's popped. That keeps the implementation simple while still achieving O((V + E) log V) per source.
 
 Running Dijkstra from every source gives me an **all-pairs cost matrix** — a table where entry [i][j] is the true shortest-path cost to move from location i to location j, passing through any intermediate nodes. This matrix is what Song's DP solver uses as its transition cost function.
 
@@ -62,15 +62,15 @@ The key design decision: the greedy solver takes the **Dijkstra cost matrix as i
 
 ### [SLIDE 5 — Test Data & Hand Trace] (~60 seconds)
 
-"I tested on three levels of data.
+"I tested on three levels of data — all generated directly from the code with fixed random seeds, so every number I show is reproducible, not a separately hand-picked example.
 
-First, **toy graphs** with 4 and 6 nodes — small enough to trace by hand. Let me walk through the 4-node case. The adjacency matrix has four locations: downtown, forest trail, mountain peak, coastal cove. After running Dijkstra, the all-pairs cost matrix reveals that the shortest path from downtown to mountain peak costs 8 — not directly (there's no direct edge), but via the forest trail: 5 + 3 = 8.
+First, **toy graphs** with 4 and 6 nodes — small enough to trace by hand. Let me walk through the 4-node case (`generate_toy_graph(4, seed=1)`). After running Dijkstra, the all-pairs cost matrix reveals that the shortest path from node 0 to node 2 costs 15.74 — not directly (there's no direct edge), but via node 1: 13.08 + 2.66 = 15.74.
 
-The greedy schedule from downtown visits: forest trail (cost 5), then mountain peak (cost 3), then coastal cove (cost 7). Total = 15. This matches the hand-computed optimal for this small case.
+The greedy schedule from node 0 visits: node 1 (cost 13.08), then node 2 (cost 2.66), then node 3 (cost 24.05). Total = 39.79. I hand-traced this against the heap pops to confirm the implementation matches.
 
 Second, **an 8-scene film benchmark** with realistic location names, terrain types, and elevations — this is the primary validation dataset.
 
-Third, **large synthetic graphs** from 100 to 10,000 nodes for scalability testing, generated with a guaranteed-connected spanning tree as the backbone."
+Third, **larger synthetic graphs** up to 500 nodes for runtime comparison, generated with a guaranteed-connected spanning tree as the backbone."
 
 ---
 
@@ -80,19 +80,19 @@ Third, **large synthetic graphs** from 100 to 10,000 nodes for scalability testi
 
 For the 8-scene film benchmark, the greedy schedule visits scenes in this order: downtown → desert dunes → forest trail → river crossing → cliff edge → coastal cove → ancient ruins → mountain peak, with a **total cost of 123.45**.
 
-The runtime benchmark confirms the complexity difference between the two algorithms. Dijkstra all-pairs at n=100 takes about 24 milliseconds. Greedy at n=1,000 takes only 14 milliseconds — because once the cost matrix is precomputed, the greedy selection loop is nearly instant.
+The runtime benchmark confirms the complexity difference between the two algorithms. Dijkstra all-pairs at n=100 takes about 29 milliseconds, growing fast as n increases since it reruns single-source Dijkstra from every node. Greedy stays under a few milliseconds even at n=500 — because once the cost matrix is precomputed, the greedy selection loop is nearly instant.
 
-For the **optimality gap analysis**, I computed a lower bound using the cheapest outgoing edge from each scene in the Dijkstra cost matrix. Across four benchmark sizes — 6, 8, 10, and 12 scenes — the greedy heuristic runs between 57% and 71% above this lower bound. That's a significant gap, which is exactly why an exact solver is needed.
+It's worth being clear about what greedy does and doesn't give you: it's a fast, valid schedule, but not a guaranteed-optimal one. Verifying how close it is to optimal would mean solving the same NP-hard problem exactly — which is exactly Song's DP layer, so I leave that comparison there rather than duplicating it.
 
-The plots in `liu/plots/` show the runtime curves on a log-log scale, confirming the quadratic growth of Dijkstra all-pairs, and a heatmap of the 8-scene cost matrix, where you can visually see the high-cost mountain transitions."
+The plots in `liu/plots/` show the runtime curve on a log-log scale, confirming the steep growth of Dijkstra all-pairs, and a heatmap of the 8-scene cost matrix, where you can visually see the high-cost mountain transitions."
 
 ---
 
 ### [SLIDE 7 — Conclusion & Future Work] (~30 seconds)
 
-"To summarize: I modeled film locations as a terrain-weighted spatial graph, implemented Dijkstra's algorithm with a custom min-heap to compute all pairwise shortest-path costs, and implemented a greedy nearest-neighbor heuristic as the scheduling baseline.
+"To summarize: I modeled film locations as a terrain-weighted spatial graph, implemented Dijkstra's algorithm with Python's `heapq` to compute all pairwise shortest-path costs, and implemented a greedy nearest-neighbor heuristic as the scheduling baseline.
 
-The greedy heuristic is fast but leaves a 57–71% gap versus the lower bound. This motivates Song's exact DP solver, which takes my all-pairs cost matrix and computes the globally optimal shooting order.
+The greedy heuristic is fast and gives a valid schedule, but no optimality guarantee. This motivates Song's exact DP solver, which takes my all-pairs cost matrix and proves the globally optimal shooting order for productions up to about 20 locations — falling back to a partitioning heuristic, or even a greedy draft of its own, once a production gets too large to solve exactly.
 
 Future improvements include integrating real GPS and OpenStreetMap elevation data, extending to asymmetric directed graphs, and applying A\* for large-scale instances where all-pairs Dijkstra becomes prohibitive.
 

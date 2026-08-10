@@ -136,7 +136,7 @@ def greedy_schedule(graph: SpatialGraph,
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    from data_gen import generate_toy_graph, load_matrix, create_film_benchmark
+    from data_gen import generate_toy_graph, create_film_benchmark
 
     print("=== Greedy Nearest-Neighbor self-test ===\n")
 

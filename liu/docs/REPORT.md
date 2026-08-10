@@ -68,29 +68,26 @@ The adjacency matrix convention (agreed interface with Song's DP solver):
 
 ### 2.2 Test Data (Adjacency Matrices)
 
-#### Toy 4-Node Graph (`toy_4node.txt`)
-Four locations: downtown, forest_trail, mountain_peak, coastal_cove.
-Used for hand-tracing and algorithm verification.
+All graphs used in this report are generated programmatically by `data_gen.py`
+(`generate_toy_graph`, `generate_sparse_graph`, `create_film_benchmark`) with a
+fixed random seed per size, so every number below is reproducible directly
+from the code — there are no separately hand-authored matrix files.
+
+#### 8-Scene Film Benchmark (`create_film_benchmark(8)`)
+
+Raw adjacency matrix (direct routes only; `0` = no direct edge). This is the
+input to Dijkstra, before shortest-path costs are computed:
 
 ```
-         downtown  forest_tr  mountain  coastal_c
-downtown        0          5         0          8
-forest_tr       5          0         3          0
-mountain        0          3         0          7
-coastal_c       8          0         7          0
-```
-
-#### 8-Scene Film Benchmark (`scene_8.txt`)
-
-```
- 0  8  0 15  0  0 12  0
- 8  0  5  0 11  0  0  9
- 0  5  0  7  0 13  0  0
-15  0  7  0  0  6  0 18
- 0 11  0  0  0  4 14  0
- 0  0 13  6  4  0  0 10
-12  0  0  0 14  0  0  3
- 0  9  0 18  0 10  3  0
+      0      1      2      3      4      5      6      7
+0   0.00  14.55   0.00   0.00  12.68   0.00  35.80  29.81
+1  14.55   0.00   0.00  14.06   0.00   0.00   7.46   9.72
+2   0.00   0.00   0.00   0.00   0.00  10.38   0.00  36.54
+3   0.00  14.06   0.00   0.00   0.00  24.79   0.00  23.73
+4  12.68   0.00   0.00   0.00   0.00  37.63   0.00   0.00
+5   0.00   0.00  10.38  24.79  37.63   0.00  20.50   0.00
+6  35.80   7.46   0.00   0.00   0.00  20.50   0.00   0.00
+7  29.81   9.72  36.54  23.73   0.00   0.00   0.00   0.00
 ```
 
 Scene node metadata:
@@ -110,9 +107,9 @@ Scene node metadata:
 
 ### 2.3 Algorithms
 
-#### Algorithm 1 — Dijkstra's Shortest Path (Custom Min-Heap)
+#### Algorithm 1 — Dijkstra's Shortest Path
 
-Dijkstra's algorithm computes the shortest path from one source node to all other nodes in a weighted graph with non-negative edge weights.
+Dijkstra's algorithm computes the shortest path from one source node to all other nodes in a weighted graph with non-negative edge weights. The implementation uses Python's built-in `heapq` binary heap as the priority queue, with lazy deletion for decrease-key: instead of updating an entry's priority in place, a new `(distance, node)` pair is pushed whenever a shorter path is found, and stale pairs are simply skipped when popped.
 
 **Pseudocode:**
 ```
@@ -120,11 +117,10 @@ DIJKSTRA(graph, source):
     dist[v] ← ∞  for all v
     prev[v] ← -1 for all v
     dist[source] ← 0
-    heap ← MinHeap()
-    heap.push(0, source)
+    heap ← [(0, source)]          // heapq binary heap
 
     while heap is not empty:
-        (d, u) ← heap.pop()
+        (d, u) ← heappop(heap)
         if d > dist[u]:          // lazy deletion: stale entry
             continue
         visited_count += 1
@@ -133,7 +129,7 @@ DIJKSTRA(graph, source):
             if dist[u] + w < dist[v]:
                 dist[v] ← dist[u] + w
                 prev[v] ← u
-                heap.push(dist[v], v)
+                heappush(heap, (dist[v], v))
 
     return dist[], prev[]
 
@@ -151,38 +147,6 @@ ALL_PAIRS_DIJKSTRA(graph):
         result ← DIJKSTRA(graph, source)
         cost_matrix[source] ← result.dist
     return cost_matrix
-```
-
-**Min-Heap implementation (from scratch, no `heapq`):**
-```
-MIN_HEAP stored as list-based binary tree:
-    parent(i)       = (i - 1) // 2
-    left_child(i)   = 2*i + 1
-    right_child(i)  = 2*i + 2
-
-push(priority, value):
-    append (priority, value) to end
-    sift_up from last index
-
-pop():
-    swap root with last element
-    remove last
-    sift_down from root
-    return swapped-out item
-
-sift_up(idx):
-    while idx > 0 and data[parent] > data[idx]:
-        swap data[parent] and data[idx]
-        idx ← parent
-
-sift_down(idx):
-    while True:
-        smallest ← idx
-        if left < n and data[left] < data[smallest]: smallest ← left
-        if right < n and data[right] < data[smallest]: smallest ← right
-        if smallest == idx: break
-        swap data[idx] and data[smallest]
-        idx ← smallest
 ```
 
 **Time complexity:** O((V + E) log V) per source  
@@ -233,11 +197,11 @@ GREEDY_NEAREST_NEIGHBOR(cost_matrix, start, scenes):
 - Verified adjacency matrix symmetry and connectivity check
 
 **Integration tests:**
-- Ran Dijkstra on connected graphs of n = 10 to 1,000; confirmed `visited_count = n` for fully connected graphs
+- Ran Dijkstra on connected graphs of n = 10 to 500; confirmed `visited_count = n` for fully connected graphs
 - Verified greedy never revisits a node and exhausts all scene nodes
 
-**Scalability tests:**
-- Sparse graphs (edge_prob = 0.05) from n = 10 to 10,000
+**Reproducibility:**
+- Every generator in `data_gen.py` takes a fixed seed, so re-running `create_film_benchmark(8)` (or any other size) always produces the exact same graph — no test-data files to keep in sync with the code
 - Verified guaranteed connectivity (spanning-tree construction before random edge addition)
 
 ---
@@ -278,38 +242,39 @@ GREEDY_NEAREST_NEIGHBOR(cost_matrix, start, scenes):
 | Metric | Value |
 |---|---|
 | Nodes visited | 8 |
-| Heap operations | 24 |
-| Wall-clock time | 0.009 ms |
+| Heap pushes | 12 |
+| Wall-clock time | 0.014 ms |
 | Path 0 → 7 | [0, 1, 7], cost = 24.27 |
 
 #### Runtime Benchmark
 
-| Algorithm | n=10 | n=50 | n=100 | n=500 | n=1,000 |
-|---|---|---|---|---|---|
-| Dijkstra (all-pairs) | 0.08 ms | 3.52 ms | 23.93 ms | 2,612.72 ms | 19,688.15 ms |
-| Greedy NN | 0.02 ms | 0.03 ms | 0.10 ms | 2.56 ms | 14.48 ms |
+| Algorithm | n=10 | n=50 | n=100 | n=500 |
+|---|---|---|---|---|
+| Dijkstra (all-pairs) | 0.09 ms | 4.25 ms | 29.35 ms | 3,690.40 ms |
+| Greedy NN | 0.02 ms | 0.06 ms | 0.21 ms | 4.77 ms |
 
-#### Optimality Gap Analysis
+Dijkstra all-pairs grows roughly quadratically-to-cubically with n (it reruns
+single-source Dijkstra from every node), while greedy stays fast since it
+only does a single O(k²) pass once the cost matrix already exists.
 
-| Benchmark | Greedy Cost | Dijkstra Lower Bound | Gap |
-|---|---|---|---|
-| 6 scenes | 332.81 | 211.11 | **57.65%** |
-| 8 scenes | 123.45 | 75.10 | **64.38%** |
-| 10 scenes | 250.74 | 157.27 | **59.43%** |
-| 12 scenes | 179.47 | 104.65 | **71.50%** |
+#### A Note on Optimality
 
-> **Note:** The Dijkstra lower bound is a *relaxed* bound (sum of cheapest per-node outgoing edges). The true TSP optimum lies between the lower bound and the greedy cost — this is where Song's exact DP solver closes the gap.
+Greedy nearest-neighbor does not guarantee the optimal schedule — it can only
+promise a valid one. Proving how far a given greedy schedule is from the true
+optimum requires solving the same NP-hard TSP instance exactly, which is
+exactly what Song's DP solver is for. We don't attempt that comparison here
+in order to keep this layer focused on the graph/shortest-path/heuristic
+pipeline rather than duplicating the exact-solver layer.
 
 #### Generated Plots
 
-All plots saved to `liu/plots/`:
+All plots saved to `liu/plots/`, generated directly by `visualize.py` from the
+same seeded generators used everywhere else in this report:
 
 | Plot | File | Description |
 |---|---|---|
-| Runtime curves | `runtime_curves.png` | Log-log: Dijkstra vs Greedy vs n |
-| Memory usage | `memory_usage.png` | Peak KB per algorithm per n |
-| Optimality gap | `optimality_gap.png` | % above lower bound, 6–12 scenes |
-| Heatmaps (×5) | `*_heatmap.png` | Adjacency matrix weight visualization |
+| Runtime curve | `runtime_curves.png` | Log-log: Dijkstra vs Greedy vs n |
+| Heatmaps (×3) | `film_benchmark_{6,8,12}_heatmap.png` | Adjacency matrix weight visualization for the generated film benchmarks |
 
 ---
 
@@ -317,7 +282,7 @@ All plots saved to `liu/plots/`:
 
 ### Answer to Research Question
 
-The greedy nearest-neighbor heuristic produces a valid filming schedule (total cost = 123.45 for 8 scenes starting from the urban basecamp). However, with a 57–71% gap above the Dijkstra-derived lower bound, greedy scheduling consistently leaves substantial cost on the table. The exact DP solver (Song's layer) is needed to close this gap and determine the globally optimal shooting order.
+The greedy nearest-neighbor heuristic produces a valid filming schedule quickly (total cost = 123.45 for 8 scenes starting from the urban basecamp), using only the all-pairs cost matrix from Dijkstra. It does not, however, guarantee that schedule is optimal — nearest-neighbor can make a locally cheap choice early on that strands the crew far from the remaining scenes later. Song's layer is what closes that gap: its subset DP proves the globally optimal order for productions small enough to solve exactly (up to about 20 locations in Song's testing), and falls back to a region-partitioning heuristic beyond that size — which stayed within 0–0.67% of the proven optimum on the productions Song tested. Beyond roughly 125 locations, even Song's system falls back to a plain greedy draft like the one implemented here. Liu's layer supplies the cost matrix every one of those paths depends on.
 
 The Dijkstra-computed all-pairs cost matrix is the critical bridge: it translates raw geographic graph structure into a pairwise transition cost table that the DP state machine consumes directly.
 
@@ -325,7 +290,7 @@ The Dijkstra-computed all-pairs cost matrix is the critical bridge: it translate
 
 1. **Synthetic data only.** Edge weights are generated from a formula rather than real GPS/elevation data. Real terrain features (road closures, one-way roads, seasonal conditions) would require integration with a real map API.
 
-2. **Greedy is not optimal.** The nearest-neighbor heuristic ignores future consequences — choosing the nearest scene now can strand the crew far from the remaining cluster. The gap of 57–71% confirms this is a significant issue.
+2. **Greedy is not optimal.** The nearest-neighbor heuristic ignores future consequences — choosing the nearest scene now can strand the crew far from the remaining cluster. It gives no guarantee on how close it lands to the true optimum. Song's exact subset DP can determine that for productions small enough to solve exactly (up to about 20 locations); beyond that, even Song's layer can no longer prove optimality and instead relies on a partitioning heuristic — or, for very large productions, falls back to a greedy draft of its own.
 
 3. **Undirected graph assumption.** Real transit costs are often asymmetric (uphill vs. downhill, one-way roads). Extending to directed graphs would increase realism.
 
@@ -339,4 +304,4 @@ The Dijkstra-computed all-pairs cost matrix is the critical bridge: it translate
 - **Apply A\* search** with a geographic heuristic for single-source pathfinding on large real-world graphs — more practical than full Dijkstra at scale
 - **Extend DP solver** to handle multi-unit crews (partition scenes across units, minimize makespan)
 - **Simulated annealing or genetic algorithms** as alternative heuristics for larger scene counts where DP becomes intractable
-- **2-opt local search** post-greedy to reduce the optimality gap without full DP enumeration
+- **2-opt local search** post-greedy to improve on the nearest-neighbor schedule without full DP enumeration

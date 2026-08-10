@@ -1,21 +1,23 @@
 """
 data_gen.py — Synthetic graph generators for film location scheduling benchmarks.
 
+Every generator takes a fixed random seed, so any graph used in this project
+can be reproduced exactly just by calling the same function again — there is
+no separate test-data file to keep in sync.
+
 Provides:
-  - generate_toy_graph      : Small dense graph for hand-verification.
-  - generate_sparse_graph   : Large sparse connected graph (guaranteed connected).
-  - generate_grid_graph     : 2-D grid graph (4-connected) with varied weights.
-  - create_film_benchmark   : Realistic film-location graph with named scenes.
-  - save_matrix / load_matrix: Plain-text adjacency matrix I/O (.txt).
+  - generate_toy_graph    : Small dense graph for hand-verification.
+  - generate_sparse_graph : Larger sparse connected graph (for runtime tests).
+  - create_film_benchmark : Realistic film-location graph with named scenes.
 """
 
 from __future__ import annotations
 import random
 import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
-from typing import List, Optional
+from typing import List
 
-from graph import Node, SpatialGraph, TerrainType, TERRAIN_MULTIPLIER, Edge
+from graph import Node, SpatialGraph, TerrainType, Edge
 
 # ---------------------------------------------------------------------------
 # Location name pools for realistic benchmarks
@@ -181,56 +183,6 @@ def generate_sparse_graph(n: int = 100, edge_prob: float = 0.05,
     return SpatialGraph.load_from_matrix(adj, nodes)
 
 
-def generate_grid_graph(rows: int = 5, cols: int = 5) -> SpatialGraph:
-    """
-    Generate a 2-D grid graph with 4-connectivity (up, down, left, right).
-
-    Each cell becomes a node; edges connect horizontally and vertically adjacent
-    cells with varied weights influenced by terrain and elevation.
-
-    Args:
-        rows: Number of grid rows.
-        cols: Number of grid columns.
-
-    Returns:
-        A SpatialGraph with rows*cols nodes.
-    """
-    rng = random.Random(rows * cols)
-    n = rows * cols
-    terrains = [_TERRAIN_SEQUENCE[(r + c) % len(_TERRAIN_SEQUENCE)]
-                for r in range(rows) for c in range(cols)]
-
-    nodes = [
-        _make_node(r * cols + c,
-                   f"grid_{r}_{c}",
-                   terrains[r * cols + c],
-                   elevation=rng.uniform(0, 2500),
-                   is_basecamp=(r == 0 and c == 0))
-        for r in range(rows) for c in range(cols)
-    ]
-    adj: List[List[float]] = [[0.0] * n for _ in range(n)]
-
-    def _idx(r: int, c: int) -> int:
-        return r * cols + c
-
-    def _add_edge(u: int, v: int) -> None:
-        dist = rng.uniform(5, 30)
-        edge = Edge.from_nodes(nodes[u], nodes[v], dist)
-        w = round(edge.weight, 2)
-        adj[u][v] = w
-        adj[v][u] = w
-
-    for r in range(rows):
-        for c in range(cols):
-            u = _idx(r, c)
-            if c + 1 < cols:
-                _add_edge(u, _idx(r, c + 1))
-            if r + 1 < rows:
-                _add_edge(u, _idx(r + 1, c))
-
-    return SpatialGraph.load_from_matrix(adj, nodes)
-
-
 def create_film_benchmark(n_scenes: int = 8) -> SpatialGraph:
     """
     Create a realistic film-location graph with named scenes and metadata.
@@ -274,76 +226,10 @@ def create_film_benchmark(n_scenes: int = 8) -> SpatialGraph:
 
 
 # ---------------------------------------------------------------------------
-# Matrix I/O
-# ---------------------------------------------------------------------------
-
-def save_matrix(matrix: List[List[float]], filepath: str) -> None:
-    """
-    Save an adjacency matrix to a plain-text file.
-
-    Format: space-separated floats, one row per line.
-    Integer-valued weights are written without a decimal point for readability.
-
-    Args:
-        matrix  : 2-D list of floats (square).
-        filepath: Destination file path (created or overwritten).
-    """
-    os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
-    lines = []
-    for row in matrix:
-        tokens = []
-        for v in row:
-            if v == int(v):
-                tokens.append(str(int(v)))
-            else:
-                tokens.append(f"{v:.4f}")
-        lines.append(" ".join(tokens))
-
-    with open(filepath, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
-
-
-def load_matrix(filepath: str) -> List[List[float]]:
-    """
-    Load an adjacency matrix from a plain-text file.
-
-    Each line is a space-separated row of numbers.  Empty lines are ignored.
-
-    Args:
-        filepath: Path to the .txt matrix file.
-
-    Returns:
-        2-D list of floats.
-
-    Raises:
-        ValueError: If rows have inconsistent lengths.
-        FileNotFoundError: If *filepath* does not exist.
-    """
-    matrix: List[List[float]] = []
-    with open(filepath, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            matrix.append([float(x) for x in line.split()])
-
-    n = len(matrix)
-    for i, row in enumerate(matrix):
-        if len(row) != n:
-            raise ValueError(
-                f"Row {i} has {len(row)} columns, expected {n} (square matrix).")
-    return matrix
-
-
-# ---------------------------------------------------------------------------
-# Self-test / matrix file generation
+# Self-test
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import os
-
-    test_dir = os.path.join(os.path.dirname(__file__), "test_data")
-
     print("=== data_gen self-test ===\n")
 
     # Toy graphs
@@ -357,19 +243,13 @@ if __name__ == "__main__":
     gs = generate_sparse_graph(20, edge_prob=0.08, seed=99)
     print(f"\nSparse graph: {gs}")
 
-    # Grid graph
-    gg = generate_grid_graph(3, 3)
-    print(f"Grid graph  : {gg}")
-
     # Film benchmark
     fb8 = create_film_benchmark(8)
     print(f"Film bench 8: {fb8}")
     fb12 = create_film_benchmark(12)
     print(f"Film bench12: {fb12}")
 
-    # Save / reload round-trip
-    tmp = "/tmp/test_roundtrip.txt"
-    save_matrix(fb8.to_matrix(), tmp)
-    loaded = load_matrix(tmp)
-    assert len(loaded) == 8, "Round-trip size mismatch"
-    print("\nMatrix round-trip: OK")
+    # Reproducibility check: same seed -> identical graph
+    fb8_again = create_film_benchmark(8)
+    assert fb8.to_matrix() == fb8_again.to_matrix(), "Seeded generator is not reproducible"
+    print("\nReproducibility check (same seed -> same matrix): OK")

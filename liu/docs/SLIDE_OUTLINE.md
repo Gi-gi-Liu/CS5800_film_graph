@@ -92,27 +92,25 @@ matrix[i][j] > 0   →  edge weight (composite cost)
 
 **Title:** Two Algorithms: Exact Paths + Fast Scheduling
 
-**Left panel — Dijkstra (custom min-heap):**
+**Left panel — Dijkstra (Python `heapq`):**
 
 ```
 DIJKSTRA(graph, source):
   dist[all] ← ∞;  dist[source] ← 0
-  heap.push(0, source)
+  heap ← [(0, source)]           // heapq
 
   while heap not empty:
-    (d, u) ← heap.pop()
+    (d, u) ← heappop(heap)
     if d > dist[u]: continue   // lazy deletion
     for each neighbor v, weight w:
       if dist[u] + w < dist[v]:
         dist[v] ← dist[u] + w
-        heap.push(dist[v], v)
+        heappush(heap, (dist[v], v))
 ```
 
-Min-Heap (from scratch):
-- List-based binary tree
-- `push` → sift_up O(log n)
-- `pop` → sift_down O(log n)
-- Decrease-key via **lazy deletion**
+Priority queue: standard library `heapq` binary heap
+- Decrease-key handled via **lazy deletion** (push new entry, skip stale pops)
+- No custom data structure needed — keeps the algorithm code focused on the graph logic
 
 Time: O((V + E) log V) per source
 All-pairs: O(V · (V + E) log V)
@@ -142,61 +140,63 @@ Input: all-pairs cost matrix from Dijkstra
 
 **Title:** Testing: From Toy Graphs to Film Benchmarks
 
-**Left column — Test data hierarchy:**
+**Left column — Test data hierarchy (all generated programmatically by `data_gen.py`, fixed seeds for reproducibility — no static matrix files):**
 
 ```
-Level 1: toy_4node.txt (4 nodes)
+Level 1: generate_toy_graph(4, seed=1)
    → Hand-traceable, unit verification
 
-Level 2: toy_6node.txt (6 nodes)
+Level 2: generate_toy_graph(6, seed=2)
    → Edge-case coverage
 
-Level 3: scene_8.txt / scene_12.txt
-   → Film benchmark, realistic weights
+Level 3: create_film_benchmark(n)
+   → Film benchmark, realistic weights (used for the n=8 results)
 
-Level 4: Synthetic sparse/grid graphs
-   → n = 100 to 10,000 nodes
-   → Scalability & stress tests
+Level 4: generate_sparse_graph(n)
+   → n = 10 to 500 nodes
+   → Runtime comparison
 ```
 
-**Center — 4-node adjacency matrix (toy):**
+**Center — 4-node adjacency matrix (`generate_toy_graph(4, seed=1)`):**
 ```
-         downtown  forest  mountain  coastal
-downtown        0       5         0        8
-forest          5       0         3        0
-mountain        0       3         0        7
-coastal         8       0         7        0
+      0       1       2       3
+0   0.00   13.08    0.00   21.36
+1  13.08    0.00    2.66   21.39
+2   0.00    2.66    0.00   27.29
+3  21.36   21.39   27.29    0.00
 ```
 
-**Right column — Hand trace of Dijkstra (4-node):**
+**Right column — Hand trace of Dijkstra (4-node, source = node 0):**
 ```
-Source: downtown (node 0)
-
 Init:  dist = [0, ∞, ∞, ∞]
-Pop (0, downtown):
-  → forest: dist[1] = 5   push(5,1)
-  → coastal: dist[3] = 8  push(8,3)
-Pop (5, forest):
-  → mountain: dist[2] = 8 push(8,2)
-Pop (8, mountain):
-  → coastal: 8+7=15 > 8, skip
-Pop (8, coastal):
+Pop (0, 0):
+  → 1: dist[1] = 13.08   push(13.08, 1)
+  → 3: dist[3] = 21.36   push(21.36, 3)
+Pop (13.08, 1):
+  → 2: dist[2] = 15.74   push(15.74, 2)
+  → 3: 13.08+21.39=34.47 > 21.36, skip
+Pop (15.74, 2):
+  → 3: 15.74+27.29=43.03 > 21.36, skip
+Pop (21.36, 3):
   done
 
-Final dist: [0, 5, 8, 8]
-Greedy order: downtown→forest→mountain→coastal
-Total cost: 5 + 3 + 7 = 15  ✓
+Final dist: [0, 13.08, 15.74, 21.36]
+
+Greedy (on the all-pairs cost matrix, not raw edges):
+Greedy order: 0 → 1 → 2 → 3
+Step costs: 13.08 + 2.66 + 24.05
+Total cost: 39.79
 ```
 
-**Speaking note:** Show this matches manual calculation — validates the implementation.
+**Speaking note:** Show this matches the matrix produced by the actual code (`generate_toy_graph(4, seed=1)`) — validates the implementation against a hand trace, not a separately hand-picked example.
 
 ---
 
 ## SLIDE 6 — Results & Benchmark Output
 
-**Title:** Results: Schedules, Runtimes & Optimality Gap
+**Title:** Results: Schedules & Runtime
 
-**Top left — Greedy schedule output (8 scenes):**
+**Left — Greedy schedule output (8 scenes):**
 ```
 Step 0: downtown_plaza    [START]
 Step 1: desert_dunes      +12.68
@@ -210,27 +210,17 @@ Step 7: mountain_peak     +10.38
 TOTAL COST:  123.45
 ```
 
-**Top right — Runtime table:**
+**Right — Runtime table:**
 
-| Algorithm | n=50 | n=100 | n=500 | n=1,000 |
+| Algorithm | n=10 | n=50 | n=100 | n=500 |
 |---|---|---|---|---|
-| Dijkstra all-pairs | 3.5 ms | 23.9 ms | 2,613 ms | 19,688 ms |
-| Greedy NN | 0.03 ms | 0.10 ms | 2.56 ms | 14.48 ms |
+| Dijkstra all-pairs | 0.09 ms | 4.25 ms | 29.35 ms | 3,690 ms |
+| Greedy NN | 0.02 ms | 0.06 ms | 0.21 ms | 4.77 ms |
 
-**Bottom left — Optimality gap chart (bar chart image):**
-```
-           Greedy vs Dijkstra Lower Bound
-6 scenes:  ████████████████░░░░  57.65%
-8 scenes:  ████████████████████░  64.38%
-10 scenes: ████████████████░░░░  59.43%
-12 scenes: █████████████████████  71.50%
-           (filled = gap above lower bound)
-```
+**Bottom — Heatmap thumbnail:**
+Reference `liu/plots/film_benchmark_8_heatmap.png` — adjacency matrix weight visualization for the 8-scene benchmark (same generated graph used for the results, not a separate hand-made example)
 
-**Bottom right — Heatmap thumbnail:**
-Reference `liu/plots/scene_8_heatmap.png` — adjacency matrix weight visualization for 8-scene benchmark
-
-**Speaking note:** The 57–71% gap directly motivates why the exact DP solver is needed.
+**Speaking note:** Greedy stays fast because it only makes one O(k²) pass once Dijkstra's cost matrix already exists; Dijkstra all-pairs is the expensive part since it reruns single-source Dijkstra from every node. Greedy gives a fast, valid schedule but no optimality guarantee — Song's exact DP layer proves optimality for productions up to about 20 locations, and falls back to a partitioning heuristic (or greedy itself, at very large scale) beyond that.
 
 ---
 
@@ -240,19 +230,19 @@ Reference `liu/plots/scene_8_heatmap.png` — adjacency matrix weight visualizat
 
 **Left column — Summary (3 bullets):**
 - Modeled film locations as terrain-weighted spatial graphs using a composite weight formula encoding distance, elevation, and terrain difficulty
-- Implemented Dijkstra's algorithm with a custom from-scratch min-heap; all-pairs cost matrix feeds Song's DP solver as C_loc
-- Greedy Nearest-Neighbor is fast (O(k²)) but leaves a **57–71% optimality gap** — confirming the necessity of exact DP
+- Implemented Dijkstra's algorithm with Python's `heapq`; all-pairs cost matrix feeds Song's DP solver as C_loc
+- Greedy Nearest-Neighbor is fast (O(k²)) and gives a valid schedule, but no optimality guarantee — Song's exact DP layer proves optimality up to ~20 locations, and falls back to partitioning (or greedy) beyond that
 
 **Center column — Limitations:**
 - Synthetic data only; real-world GPS/elevation not yet integrated
 - Undirected graph; real transit costs are often asymmetric
-- All-pairs Dijkstra memory scales as O(n²) — impractical for n > 10,000
+- All-pairs Dijkstra memory scales as O(n²) — impractical for very large n
 - Single crew unit; multi-unit productions require parallel scheduling
 
 **Right column — Future Work:**
 - Integrate OpenStreetMap + SRTM elevation data for real terrain weights
 - Apply A\* search with geospatial heuristic for large-scale graphs
-- 2-opt local search post-greedy to reduce gap without full DP
+- 2-opt local search post-greedy to improve on the nearest-neighbor schedule
 - Extend to directed graphs for asymmetric transit costs
 - Multi-unit crew formulation (partition scenes, minimize makespan)
 
@@ -273,7 +263,7 @@ Song consumes:  C_loc in DP transition cost
 - **Color scheme:** Dark navy background with white text and amber/gold accents for code blocks; matches film production aesthetic
 - **Font:** Monospace for all code/matrices; sans-serif for body text
 - **Plots to embed (from `liu/plots/`):**
-  - Slide 6: `runtime_curves.png`, `optimality_gap.png`, `scene_8_heatmap.png`
-  - Slide 3: `toy_4node_heatmap.png` (adjacency matrix heatmap)
+  - Slide 6: `runtime_curves.png`, `film_benchmark_8_heatmap.png`
+  - Slide 3: `film_benchmark_6_heatmap.png` (adjacency matrix heatmap)
 - **Code blocks:** Use light gray background boxes, syntax-highlighted pseudocode
 - **Transitions:** Fade — no animations that obscure technical content
