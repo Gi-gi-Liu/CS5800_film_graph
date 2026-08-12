@@ -1,48 +1,20 @@
 """
-clustered_dp.py — The scheduler: partition into regions, then solve exactly.
+clustered_dp.py — Partition the locations into regions, then solve exactly.
 
-Motivation
-----------
-Solving a shooting order exactly costs 2^n, so it runs out of room around 20
-locations.  A real feature film has more.  Real productions do not solve this by
-being cleverer about the whole map — they shoot *block by block*: finish
-everything in one region, then strike camp and move to the next.  Nobody drives
-Beijing -> Hengdian -> Beijing -> Qingdao.
+Solving a shooting order exactly costs 2^n and runs out around 20 locations.
+Real productions get past that by block-shooting: finish one region, strike
+camp, move on.  This module does the same thing:
 
-This module turns that industry practice into an algorithm:
+    1. Group locations by building a minimum spanning tree (Kruskal with
+       union-find) and deleting its heaviest edges — the long hauls.
+    2. Solve each region exactly, for every entry and exit point rather than
+       one (schedule_dp.path_cost_table).
+    3. Order the regions with a second DP whose state carries the exit
+       location, so the joins are optimised with the ordering.
 
-    1. Group locations into regions by building a minimum spanning tree and
-       deleting its heaviest edges — the long hauls between cities.
-    2. Solve every region internally with exact DP — for all possible entry
-       and exit points, not just one (see schedule_dp.path_cost_table).
-    3. Solve the region-level tour with a second exact DP whose state carries
-       the exit location, so the joins between regions are optimised too.
-
-Every step is built from material the course covers: Kruskal's MST with
-union-find for the grouping, subset DP for both routing levels.
-
-What is exact and what is not
------------------------------
-Steps 2 and 3 are both exact: within a region the route is provably optimal,
-and where to leave one region and enter the next is optimised jointly with the
-region ordering.  **The partition is the only approximation in the method.**
-
-There is no separate small-input algorithm.  A production that already fits the
-exact solver has nothing to partition, so the method runs with a single region
-and returns a proven global optimum — plain Held-Karp is this method's
-degenerate case, not a different one.  The self-test at the bottom of this file
-checks that the two paths agree.
-
-So the quality of an answer rests entirely on whether the regions are sensible
-— which is exactly the assumption a producer already makes when they decide to
-block-shoot.
-
-Cost
-----
-    grouping        O(n^2 log n)          Kruskal over the dense cost matrix
-    within regions  O(k * 2^m * m^3)      m = region size cap
-    across regions  O(2^k * k^2 * m^2)
-Both exponents are now on small numbers instead of on n.
+The partition is the only approximation; steps 2 and 3 are exact.  A production
+that already fits the exact solver runs with a single region and returns a
+proven optimum.  See REPORT sections 2.1 and 2.3.
 """
 
 from __future__ import annotations
@@ -58,26 +30,14 @@ from typing import Dict, List, Optional, Tuple
 from schedule_dp import (EXACT_LIMIT, INF, ScheduleResult, optimal_schedule,
                          path_cost_table)
 
-# Max locations per region.  This is a real trade-off, not just a speed knob:
-# bigger regions are solved more exactly, but "finish this region before moving
-# on" is a *constraint*, so making regions bigger makes that constraint bite
-# harder.  Measured across the three productions, cost is flat from cap 7 to 11
-# and degrades at 12 (La La Land 210.68 -> 217.73), while caps below 6 leave
-# Tenet needing more regions than MAX_REGIONS allows.  10 is inside that flat
-# band and is the smallest cap at which the largest production reaches its best
-# cost.
+# Cost is flat for caps 7-11 and worse at 12; below 6 Tenet needs more regions
+# than MAX_REGIONS allows.  See REPORT section 2.6.
 DEFAULT_REGION_CAP = 10
 MAX_REGIONS = 13          # keeps the region-level 2^k DP cheap
 
 
 class PartitionError(ValueError):
-    """
-    Raised when the locations cannot be split into regions the solver can take.
-
-    A distinct type so callers can tell "this input is too large to partition",
-    which has a sensible fallback, apart from "this argument is wrong", which
-    does not.
-    """
+    """Raised when the locations cannot be split into solver-sized regions."""
 
 
 # ---------------------------------------------------------------------------
@@ -85,19 +45,7 @@ class PartitionError(ValueError):
 # ---------------------------------------------------------------------------
 
 def _mst_edges(cost: List[List[float]]) -> List[Tuple[float, int, int]]:
-    """
-    Build a minimum spanning tree over the locations with Kruskal's algorithm.
-
-    Sort every pair by cost, keep an edge whenever it joins two locations that
-    are not already linked, and stop at n-1 edges.  Union-find with path
-    compression does the "are these already linked" test.
-
-    Args:
-        cost: n x n all-pairs cost matrix.
-
-    Returns:
-        The n-1 tree edges as (weight, i, j), in the order Kruskal accepted them.
-    """
+    """Kruskal MST over the cost matrix, as (weight, i, j) in accepted order."""
     n = len(cost)
     parent = list(range(n))
 
@@ -142,39 +90,28 @@ def _components(n: int, edges: List[Tuple[float, int, int]]) -> List[List[int]]:
     return list(groups.values())
 
 
-def find_regions(cost: List[List[float]], start: int = 0,
-                 region_cap: int = DEFAULT_REGION_CAP,
-                 n_regions: Optional[int] = None) -> List[List[int]]:
+def find_regions(cost: List[List[float]],
+                 region_cap: int = DEFAULT_REGION_CAP) -> List[List[int]]:
     """
     Split the locations into regions by cutting a minimum spanning tree.
 
-    Build the MST, then delete its k-1 heaviest edges: what remains is k groups
-    of locations that are cheap to reach from one another.  A long haul between
-    two cities is exactly the sort of expensive edge this removes, so the groups
-    come out as the cities.
-
-    How many regions?  The tree's own edge weights say so.  On a real map the
-    weights fall off a cliff between the last inter-city hop and the first local
-    road, so the count is taken at the widest ratio gap in the sorted weights —
-    no threshold to tune.  Ties to the size cap: keep cutting past that point if
-    any region is still too large for the exact solver.
+    Delete the k-1 heaviest tree edges and k groups remain, each cheap to move
+    around inside.  k is taken where the ratio between consecutive sorted
+    weights is largest, so there is no threshold to tune; anything still larger
+    than `region_cap` is then split again.  See REPORT section 2.3.
 
     Args:
         cost      : n x n all-pairs cost matrix.
-        start     : Unused; kept so callers need not care which grouping method
-                    is in play.
         region_cap: Maximum locations per region.
-        n_regions : Fix the region count instead of inferring it — use this when
-                    the production already knows its shooting blocks.
 
     Returns:
-        List of regions, each a list of global location indices.
+        List of regions, each a list of location indices.
 
     Raises:
-        ValueError: If no admissible region count exists within MAX_REGIONS.
+        PartitionError: If no admissible region count exists within MAX_REGIONS.
     """
     n = len(cost)
-    if n <= region_cap and n_regions is None:
+    if n <= region_cap:
         return [list(range(n))]
 
     tree = _mst_edges(cost)
@@ -183,27 +120,20 @@ def find_regions(cost: List[List[float]], start: int = 0,
     heavy_first = sorted(tree, reverse=True)
 
     # --- Step 1: cut at the natural break in the tree's edge weights ---------
-    if n_regions is not None:
-        cuts = max(0, min(n_regions, n) - 1)
-    else:
-        cuts, best_ratio = 0, 0.0
-        for k in range(2, min(MAX_REGIONS, n) + 1):
-            if k - 1 >= len(heavy_first):
-                break
-            last_cut, first_kept = heavy_first[k - 2][0], heavy_first[k - 1][0]
-            ratio = last_cut / first_kept if first_kept > 0 else INF
-            if ratio > best_ratio:
-                best_ratio, cuts = ratio, k - 1
+    cuts, best_ratio = 0, 0.0
+    for k in range(2, min(MAX_REGIONS, n) + 1):
+        if k - 1 >= len(heavy_first):
+            break
+        last_cut, first_kept = heavy_first[k - 2][0], heavy_first[k - 1][0]
+        ratio = last_cut / first_kept if first_kept > 0 else INF
+        if ratio > best_ratio:
+            best_ratio, cuts = ratio, k - 1
 
     removed = set(range(cuts))          # indices into heavy_first
 
     # --- Step 2: split anything still too big for the exact solver ----------
-    # A region is a connected piece of the tree, so the tree edges inside it
-    # already form its own spanning tree — splitting it is just cutting its
-    # heaviest internal edge.  Doing it region by region, rather than by
-    # continuing down the global weight order, keeps every other region intact:
-    # eleven locations in one city get halved without shattering the cities
-    # around it.
+    # Region by region rather than down the global weight order, so splitting
+    # one oversized region leaves the others intact.
     while True:
         kept = [e for i, e in enumerate(heavy_first) if i not in removed]
         regions = _components(n, kept)
@@ -230,9 +160,8 @@ def find_regions(cost: List[List[float]], start: int = 0,
 
 @dataclass
 class ClusteredResult(ScheduleResult):
-    """A ScheduleResult that also records the regions and the region order."""
+    """A ScheduleResult that also records the regions it used."""
     regions: List[List[int]] = field(default_factory=list)
-    region_order: List[int] = field(default_factory=list)
 
 
 def clustered_schedule(cost: List[List[float]],
@@ -241,42 +170,29 @@ def clustered_schedule(cost: List[List[float]],
                        return_to_base: bool = False,
                        always_partition: bool = False) -> ClusteredResult:
     """
-    Partition the locations into regions, then solve exactly — inside each
-    region, and across them.
+    Partition the locations, then solve exactly inside each region and across
+    them.
 
-    When the whole production already fits the exact solver there is nothing to
-    partition: the method collapses to plain Held-Karp over every location and
-    returns a proven optimum.  That is not a separate algorithm bolted on for
-    small inputs — it is this one with a single region, and it returns the same
-    order the partitioned path would (verified in the self-test below).  The
-    single-region case is routed straight to `optimal_schedule` only for speed:
-    `path_cost_table` solves every entry point because a region can be entered
-    from anywhere, but with one region the entry is fixed, and doing the extra
-    work costs an order of magnitude for an identical answer.
-
-    So the only approximation anywhere in the method is the partition itself.
+    A production that already fits the exact solver has nothing to partition and
+    is routed straight to `optimal_schedule` — same answer as running the region
+    machinery on a single region, but without solving every entry point when the
+    entry is fixed.
 
     Args:
-        cost          : n x n all-pairs cost matrix.
-        start         : Base / first location.
-        region_cap    : Maximum locations per region.
-        return_to_base: If True the crew returns to `start` at wrap.
-        always_partition: Run the partitioned machinery even when the input
-                        would not normally need partitioning.  Off in ordinary
-                        use — it only makes the answer worse or slower.  The
-                        experiments need it: measuring what the partition costs
-                        requires actually partitioning something the exact
-                        solver could have handled, and the correctness test
-                        needs the partition code to run at sizes exhaustive
-                        search can check.
+        cost            : n x n all-pairs cost matrix.
+        start           : Base / first location.
+        region_cap      : Maximum locations per region.
+        return_to_base  : If True the crew returns to `start` at wrap.
+        always_partition: Force the region machinery even when the input fits
+                          the exact solver.  Used by the experiments and the
+                          self-test; it can only make the answer worse.
 
     Returns:
-        ClusteredResult with the full location order, total cost, the regions
-        that were used and the order they were shot in.
+        ClusteredResult with the order, cost and the regions that were used.
     """
     n = len(cost)
     if always_partition or n > EXACT_LIMIT:
-        regions = find_regions(cost, start=start, region_cap=region_cap)
+        regions = find_regions(cost, region_cap=region_cap)
     else:
         regions = [list(range(n))]
 
@@ -287,7 +203,7 @@ def clustered_schedule(cost: List[List[float]],
             order=exact.order, total_cost=exact.total_cost,
             leg_costs=exact.leg_costs, states_settled=exact.states_settled,
             n_locations=n, closed=return_to_base,
-            regions=regions, region_order=[0])
+            regions=regions)
 
     # The base must anchor whichever region contains it.
     home = next(i for i, g in enumerate(regions) if start in g)
@@ -381,7 +297,6 @@ def clustered_schedule(cost: List[List[float]],
     chain.reverse()
 
     order: List[int] = []
-    region_order: List[int] = []
     for i, (mask_i, c, b) in enumerate(chain):
         _, paths = tables[c]
         if i == 0:
@@ -390,7 +305,6 @@ def clustered_schedule(cost: List[List[float]],
             prev_exit = regions[chain[i - 1][1]][chain[i - 1][2]]
             a = best_join[(prev_exit, c, b)][1]
         order.extend(paths[a][b])
-        region_order.append(c)
 
     leg_costs = [cost[order[j]][order[j + 1]] for j in range(len(order) - 1)]
     if return_to_base:
@@ -405,7 +319,6 @@ def clustered_schedule(cost: List[List[float]],
         n_locations=n,
         closed=return_to_base,
         regions=regions,
-        region_order=region_order,
     )
 
 
@@ -437,9 +350,6 @@ if __name__ == "__main__":
         for region_order in permutations(others):
             for home_route in permutations([v for v in regions[home]
                                             if v != start]):
-                stacks = [[start, *home_route]]
-                for r in region_order:
-                    stacks.append(None)
                 def walk(idx, seq):
                     nonlocal best
                     if idx == len(region_order):
@@ -450,7 +360,7 @@ if __name__ == "__main__":
                         return
                     for route in permutations(regions[region_order[idx]]):
                         walk(idx + 1, seq + list(route))
-                walk(0, stacks[0])
+                walk(0, [start, *home_route])
         return best
 
     # ---- 1. Single region must reproduce the exact optimum ----
@@ -473,9 +383,6 @@ if __name__ == "__main__":
                 checks += 1
                 walked = sum(m[got.order[k]][got.order[k + 1]]
                              for k in range(len(got.order) - 1))
-                if closed:
-                    walked = sum(m[got.order[k]][got.order[k + 1]]
-                                 for k in range(len(got.order) - 1))
                 if (abs(got.total_cost - truth.total_cost) > 1e-9
                         or abs(walked - got.total_cost) > 1e-9
                         or list(got.order) != list(exact.order)):

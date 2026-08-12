@@ -10,11 +10,6 @@ different geographic scales:
     one country, many cities  Forrest Gump (1994)           30    US states/towns
     many countries            Tenet (2020)                  34    countries/cities
 
-The point of the ladder: nothing in the scheduler changes between them.  The
-same MST grouping that finds neighbourhoods inside Los Angeles finds cities
-across the United States and countries across the world — the algorithm never
-knows which scale it is looking at, only what the cost matrix says.
-
 The `group` field on each location records the district / town / city it truly
 belongs to.  The scheduler never sees it; it exists only so the grouping step
 can be scored against ground truth.
@@ -48,8 +43,6 @@ immaterial next to the tens of kilometres between districts.
 Real shooting order is not published for any of the three, so the schedules
 here can be compared with each other but not against what the crews actually
 did.
-
-Terrain and elevation feed the geographic layer's weight formula unchanged.
 """
 
 from __future__ import annotations
@@ -271,6 +264,26 @@ def build_production(key: str, inter_hub_links: int = 3
         for i, (name, group, terrain, elev, lat, lon) in enumerate(prod.locations)
     ]
     return assemble_road_network(nodes, inter_hub_links), nodes, prod
+
+
+def subset_upto(nodes: List[GeoNode], limit: int) -> List[GeoNode]:
+    """
+    Take whole places until adding another would exceed `limit` locations.
+
+    Whole places, not the first `limit` entries: half a city is not a smaller
+    version of the same problem.
+    """
+    groups: Dict[str, List[GeoNode]] = {}
+    for nd in nodes:
+        groups.setdefault(nd.city, []).append(nd)
+    picked: List[GeoNode] = []
+    for members in groups.values():
+        if len(picked) + len(members) <= limit:
+            picked.extend(members)
+    return [GeoNode(id=i, name=nd.name, terrain_type=nd.terrain_type,
+                    elevation_m=nd.elevation_m, is_basecamp=(i == 0),
+                    lat=nd.lat, lon=nd.lon, city=nd.city)
+            for i, nd in enumerate(picked)]
 
 
 def true_groups(nodes: List[GeoNode]) -> Dict[str, List[int]]:

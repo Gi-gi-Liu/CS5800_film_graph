@@ -36,12 +36,11 @@ from dijkstra import all_pairs_shortest_paths            # geographic layer
 from greedy import greedy_nearest_neighbor               # geographic layer
 
 from clustered_dp import PartitionError, clustered_schedule
-from film_data import PRODUCTIONS, build_production
+from film_data import PRODUCTIONS, build_production, subset_upto
 from road_network import GeoNode, assemble_road_network
 from schedule_dp import EXACT_LIMIT, optimal_schedule
 
-# Colours are checked for colour-blind separation and for contrast against a
-# white page, so the plots stay readable printed in grey as well as on screen.
+# Colour-blind-safe palette.
 GREEDY = "#2a78d6"
 SCHEDULED = "#eb6834"
 EXACT = "#1baf7a"
@@ -67,7 +66,7 @@ def _save(fig: plt.Figure, filename: str) -> str:
 
 
 def _style(ax: plt.Axes, xlabel: str = "", ylabel: str = "") -> None:
-    """Recessive axes and gridlines, so the data is the loudest thing."""
+    """Muted axes and gridlines."""
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):
@@ -140,20 +139,6 @@ def plot_exact_scaling(key: str = "la_la_land",
 # 2. Cost above the proven optimum
 # ---------------------------------------------------------------------------
 
-def _subset_upto(nodes: List[GeoNode], limit: int) -> List[GeoNode]:
-    """Take whole places until adding another would pass `limit` locations."""
-    groups: Dict[str, List[GeoNode]] = {}
-    for nd in nodes:
-        groups.setdefault(nd.city, []).append(nd)
-    picked: List[GeoNode] = []
-    for members in groups.values():
-        if len(picked) + len(members) <= limit:
-            picked.extend(members)
-    return [GeoNode(id=i, name=nd.name, terrain_type=nd.terrain_type,
-                    elevation_m=nd.elevation_m, is_basecamp=(i == 0),
-                    lat=nd.lat, lon=nd.lon, city=nd.city)
-            for i, nd in enumerate(picked)]
-
 
 def plot_optimality_gap(filename: str = "optimality_gap.png") -> str:
     """
@@ -171,7 +156,7 @@ def plot_optimality_gap(filename: str = "optimality_gap.png") -> str:
     titles, part_gaps, greedy_gaps = [], [], []
     for key in PRODUCTIONS:
         _, nodes, prod = build_production(key)
-        sub = _subset_upto(nodes, EXACT_LIMIT)
+        sub = subset_upto(nodes, EXACT_LIMIT)
         cost = all_pairs_shortest_paths(assemble_road_network(sub))
         opt = optimal_schedule(cost, start=0).total_cost
         # always_partition, or a subset this size would skip the partition and
@@ -314,10 +299,8 @@ def plot_routes(key: str = "la_la_land",
                    linewidths=1.5, zorder=3)
         ax.scatter([xs[0]], [ys[0]], s=190, facecolors="none",
                    edgecolors=INK, linewidths=1.4, zorder=4)
-        # Place labels collide badly where a production clusters — Hollywood
-        # and West Hollywood land almost on top of each other. Offsets are
-        # chosen greedily: try the four corners, keep the first that does not
-        # overlap a label already placed.
+        # Labels collide where a production clusters, so try offsets in turn
+        # and keep the first that clears everything already placed.
         placed: List[Tuple[float, float, float, float]] = []
         w_per_char, h_lab = 0.0062 * (max(xs) - min(xs)), 0.030 * (max(ys) - min(ys))
         for i, (place, _, _) in enumerate(blocks):

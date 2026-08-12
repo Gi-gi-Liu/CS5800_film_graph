@@ -1,30 +1,12 @@
 """
-schedule_dp.py — Held-Karp exact DP for optimal film shooting-order scheduling.
+schedule_dp.py — Held-Karp subset DP for exact shooting-order scheduling.
 
-This is the *scheduling layer* of the two-stage pipeline:
+Consumes the all-pairs cost matrix from the geographic layer, not a raw
+adjacency matrix: there 0 means "no direct road", here it means "already here",
+and passing the wrong one gives silently wrong answers.
 
-    Liu's geographic layer                 Song's scheduling layer
-    ----------------------                 -----------------------
-    locations -> terrain-weighted graph    cost matrix -> optimal shooting order
-    Dijkstra  -> all-pairs cost matrix  ->  Held-Karp subset DP
-    Greedy NN -> fast approximate order     (exact, globally optimal)
-
-Key design decisions:
-  - The DP consumes an all-pairs *cost matrix* (the output of
-    liu.dijkstra.all_pairs_shortest_paths), NOT a raw adjacency matrix.
-    In an adjacency matrix 0 means "no direct road"; in a cost matrix 0 means
-    "already here".  Passing the wrong one produces silently wrong answers.
-  - Locations are assumed pre-deduplicated: every scene at the same location is
-    shot in one visit.  Per-location shooting cost is a constant independent of
-    ordering, so it does not affect the optimal order and is excluded from the
-    objective (see REPORT for the proof).
-  - dp[] and parent[] are flat `array` buffers rather than nested lists.  At
-    n=18 this is ~43 MB instead of ~300 MB, which is the difference between the
-    exact solver being usable and not.
-
-Complexity:
-    Time  O(2^n * n^2)
-    Space O(2^n * n)
+dp[] and parent[] are flat `array` buffers rather than nested lists, which is
+what puts n = 20 within reach.  Time O(2^n n^2), space O(2^n n).
 """
 
 from __future__ import annotations
@@ -37,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from array import array
 from dataclasses import dataclass, field
 from itertools import permutations
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 INF = float("inf")
 
@@ -52,37 +34,15 @@ EXACT_LIMIT = 20
 
 @dataclass
 class ScheduleResult:
-    """
-    Output of one exact scheduling run.
-
-    Attributes:
-        order          : Location indices in shooting order, starting at `start`.
-                         If the schedule returns to base, `start` also appears
-                         as the final element.
-        total_cost     : Total transition cost of the schedule.
-        leg_costs      : leg_costs[k] is the cost of moving order[k] -> order[k+1].
-        states_settled : Number of (subset, last-location) DP states actually
-                         relaxed, used for the empirical growth analysis.  It
-                         counts the subset DP only: on a partitioned run it
-                         reports the region-level states and not the work inside
-                         path_cost_table, so it is a growth measure for the
-                         unpartitioned solver, not a total work count.
-        n_locations    : Number of locations scheduled.
-        closed         : True if the schedule returns to the starting base.
-    """
-    order: List[int]
+    """One scheduling run: the order, its cost, and how much work it took."""
+    order: List[int]                    # includes the base again if closed
     total_cost: float
     leg_costs: List[float] = field(default_factory=list)
+    # (subset, last-location) states relaxed.  Counts the subset DP only, so on
+    # a partitioned run it misses the work inside path_cost_table.
     states_settled: int = 0
     n_locations: int = 0
     closed: bool = False
-
-    def __str__(self) -> str:
-        path = " -> ".join(str(v) for v in self.order)
-        kind = "closed" if self.closed else "open"
-        return (f"ScheduleResult({kind}, order=[{path}], "
-                f"total_cost={self.total_cost:.4f}, "
-                f"states={self.states_settled})")
 
 
 # ---------------------------------------------------------------------------
@@ -91,37 +51,25 @@ class ScheduleResult:
 
 def optimal_schedule(cost: List[List[float]],
                      start: int = 0,
-                     end: Optional[int] = None,
                      return_to_base: bool = False) -> ScheduleResult:
     """
-    Compute the globally optimal shooting order via Held-Karp subset DP.
+    Globally optimal shooting order by Held-Karp subset DP.
 
-    State:
-        dp[S][v] = minimum cost to have shot exactly the locations in set S,
-                   currently standing at location v (v must be in S).
-
-    Recurrence:
-        dp[S | {u}][u] = min over v in S of  dp[S][v] + cost[v][u]
-
-    Because S only ever grows, the state space is a DAG and the DP is a
-    shortest-path computation over it, evaluated in order of increasing mask.
+    dp[S][v] is the cheapest way to have shot exactly the locations in S while
+    standing at v.  S only grows, so the states form a DAG and one pass in
+    increasing mask order settles them all.  See REPORT section 2.2.
 
     Args:
-        cost          : n x n all-pairs shortest-path cost matrix.  cost[i][j]
-                        may be INF if j is unreachable from i.
-        start         : Index of the base / first location to shoot.
-        end           : If given, the schedule must finish at this location.
-                        Ignored when `return_to_base` is True.
-        return_to_base: If True, the crew returns to `start` after the last
-                        location (a Hamiltonian cycle rather than a path).
+        cost          : n x n all-pairs cost matrix; INF where unreachable.
+        start         : Base / first location.
+        return_to_base: If True the crew returns to `start` after the last stop.
 
     Returns:
-        ScheduleResult with the optimal order, cost, per-leg costs and the
-        number of DP states settled.
+        ScheduleResult with the order, cost, per-leg costs and states settled.
 
     Raises:
-        ValueError: If the matrix is empty or not square, `start`/`end` are out
-                    of range, `end` equals `start`, or n exceeds EXACT_LIMIT.
+        ValueError: If the matrix is empty or not square, `start` is out of
+                    range, or n exceeds EXACT_LIMIT.
     """
     n = len(cost)
     if n == 0:
@@ -132,18 +80,11 @@ def optimal_schedule(cost: List[List[float]],
                 f"Row {i} has length {len(row)}, expected {n} (square matrix).")
     if not (0 <= start < n):
         raise ValueError(f"start={start} out of range for {n} locations.")
-    if end is not None and not (0 <= end < n):
-        raise ValueError(f"end={end} out of range for {n} locations.")
-    if end is not None and end == start and n > 1:
-        # Checked here rather than after the DP: an invalid argument should not
-        # cost an exponential run first.
-        raise ValueError("end must differ from start for an open schedule.")
     if n > EXACT_LIMIT:
         raise ValueError(
             f"n={n} exceeds the exact-DP ceiling of {EXACT_LIMIT}. "
             f"Use the clustered or heuristic solver at this scale.")
 
-    # Trivial single-location schedule
     if n == 1:
         return ScheduleResult(order=[start], total_cost=0.0, leg_costs=[],
                               states_settled=1, n_locations=1,
@@ -202,10 +143,6 @@ def optimal_schedule(cost: List[List[float]],
                 best_cost = d + back
                 best_last = v
                 tail_cost = back
-    elif end is not None:
-        d = dp[full * n + end]
-        if d < INF:
-            best_cost, best_last = d, end
     else:
         for v in range(n):
             d = dp[full * n + v]
@@ -272,10 +209,7 @@ def path_cost_table(cost: List[List[float]],
     """
     m = len(members)
     if m > EXACT_LIMIT:
-        # This does m Held-Karp runs, so it is m times more expensive than
-        # optimal_schedule at the same size — it needs the ceiling at least as
-        # much, and without one an oversized region_cap turns a 20 ms call into
-        # a multi-minute one.
+        # m Held-Karp runs, so m times more expensive than optimal_schedule.
         raise ValueError(
             f"group of {m} locations exceeds the exact-DP ceiling of "
             f"{EXACT_LIMIT}; lower region_cap.")
@@ -341,22 +275,8 @@ def path_cost_table(cost: List[List[float]],
 
 def brute_force_schedule(cost: List[List[float]],
                          start: int = 0,
-                         end: Optional[int] = None,
                          return_to_base: bool = False) -> ScheduleResult:
-    """
-    Enumerate every permutation and return the cheapest schedule.
-
-    This exists purely as a correctness oracle for `optimal_schedule`: it is
-    obviously correct (it literally checks every order) and obviously too slow
-    to use (O(n!)), so agreement between the two on small inputs is what
-    justifies the claim that the DP result is optimal.
-
-    Args:
-        cost, start, end, return_to_base: Same meaning as `optimal_schedule`.
-
-    Returns:
-        ScheduleResult with the optimal order found by exhaustive search.
-    """
+    """Exhaustive-search oracle for optimal_schedule.  O(n!), test use only."""
     n = len(cost)
     others = [v for v in range(n) if v != start]
 
@@ -364,8 +284,6 @@ def brute_force_schedule(cost: List[List[float]],
     best_perm: Tuple[int, ...] = ()
 
     for perm in permutations(others):
-        if end is not None and not return_to_base and perm and perm[-1] != end:
-            continue
         total = 0.0
         cur = start
         ok = True

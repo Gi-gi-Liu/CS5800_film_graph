@@ -1,19 +1,13 @@
 """
-road_network.py — Put filming locations on the globe, and wire them into a road network.
+road_network.py — Put filming locations on the globe and wire them into a graph.
 
-The geographic layer models a location by terrain type and elevation but not by
-position: its generators draw edge lengths at random, so two "nearby" locations
-are nearby only by accident.  That is fine for testing shortest paths, but it
-leaves the map with no regions for a region-by-region scheduler to find.
+The geographic layer models a location by terrain and elevation but not by
+position.  This module supplies the coordinates and builds the road network both
+layers run on; the location data itself is in `film_data.py`.
 
-This module supplies the missing piece — coordinates — and turns a set of
-located filming sites into the graph both layers run on.  Actual location data
-lives in `film_data.py`.
-
-Nothing in the geographic layer is modified.  `GeoNode` subclasses its `Node` to
-carry coordinates, edge weights come from its `Edge.from_nodes`, and the
-finished adjacency matrix is handed to its `SpatialGraph.load_from_matrix`, so
-its Dijkstra runs on these maps unchanged.
+Nothing in the geographic layer is modified: `GeoNode` subclasses its `Node`,
+weights come from its `Edge.from_nodes`, and the finished matrix goes to its
+`SpatialGraph`.
 """
 
 from __future__ import annotations
@@ -68,30 +62,19 @@ def haversine_km(a: GeoNode, b: GeoNode) -> float:
 def assemble_road_network(nodes: List[GeoNode],
                           inter_hub_links: int = 3) -> SpatialGraph:
     """
-    Wire a set of located nodes into the road network the schedulers run on.
+    Wire located nodes into the road network the schedulers run on.
 
-    Two kinds of road, matching how a crew actually moves:
-
-      * inside a place — every location connects to every other one, because a
-        van can drive straight between any two sites in the same town;
-      * between places — only the places' first-listed locations connect, and
-        only to the nearest few.  You fly or drive into a place, then work
-        locally, so the long-haul network is sparse and getting from one place
-        to a distant one is a real routing problem rather than a straight line.
-
-    A pure nearest-neighbour long-haul network strands whole clusters — four
-    western US cities, say, are each other's nearest neighbours and close into a
-    group with no link east.  So a minimum spanning tree over the hubs goes down
-    first (Prim's, on great-circle distance) to guarantee everything is
-    reachable, and the nearest-neighbour routes are added on top for realistic
-    redundancy.
-
-    Edge weights come from the geographic layer's own formula, so terrain and
-    elevation are priced exactly as that layer defines them.
+    Two kinds of road, matching how a crew moves: inside a place everything
+    connects to everything, because a van can drive between any two sites in the
+    same town; between places only the first-listed location connects, and only
+    to the nearest few, so a long-haul move has to be routed.  A minimum
+    spanning tree over those goes down first, or a pure nearest-neighbour
+    network strands whole clusters.  Weights come from the geographic layer's
+    formula.
 
     Args:
-        nodes          : Located nodes, already carrying their `city` grouping.
-                         Their `id` fields must match their index.
+        nodes          : Located nodes carrying their `city` grouping; `id` must
+                         match index.
         inter_hub_links: How many nearest places each place connects to.
 
     Returns:

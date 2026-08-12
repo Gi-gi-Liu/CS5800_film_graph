@@ -32,7 +32,8 @@ from greedy import greedy_nearest_neighbor               # geographic layer
 
 from clustered_dp import (DEFAULT_REGION_CAP, MAX_REGIONS, PartitionError,
                           _mst_edges, clustered_schedule, find_regions)
-from film_data import PRODUCTIONS, build_production, true_groups
+from film_data import (PRODUCTIONS, build_production, subset_upto,
+                       true_groups)
 from road_network import GeoNode, assemble_road_network, haversine_km
 from schedule_dp import EXACT_LIMIT, optimal_schedule
 
@@ -46,26 +47,6 @@ def _gap(value: float, optimum: float) -> float:
 def rule(title: str) -> None:
     print(f"\n{title}\n" + "-" * len(title))
 
-
-def subset_upto(nodes: List[GeoNode], limit: int) -> List[GeoNode]:
-    """
-    Take whole places until adding another would pass `limit` locations.
-
-    Whole places, not the first `limit` entries: a partial city would be a
-    production that shoots half of Los Angeles, which is not a smaller version
-    of the same problem.
-    """
-    groups: Dict[str, List[GeoNode]] = {}
-    for nd in nodes:
-        groups.setdefault(nd.city, []).append(nd)
-    picked: List[GeoNode] = []
-    for members in groups.values():
-        if len(picked) + len(members) <= limit:
-            picked.extend(members)
-    return [GeoNode(id=i, name=nd.name, terrain_type=nd.terrain_type,
-                    elevation_m=nd.elevation_m, is_basecamp=(i == 0),
-                    lat=nd.lat, lon=nd.lon, city=nd.city)
-            for i, nd in enumerate(picked)]
 
 
 def plain_distance_graph(nodes: List[GeoNode],

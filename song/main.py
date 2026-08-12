@@ -15,11 +15,6 @@ main.py — End-to-end pipeline: a film's locations in, its shooting schedule ou
           v
     shooting order               "so shoot them in this order"
 
-Locations are taken as already deduplicated: all scenes sharing a location are
-shot in one visit.  Per-location shooting cost is then a constant that every
-ordering pays equally, so it cannot change which ordering is cheapest and is
-left out of the objective.
-
 Usage:
     python main.py                    # list the available productions
     python main.py la_la_land         # schedule one
