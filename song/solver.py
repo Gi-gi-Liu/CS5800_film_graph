@@ -12,11 +12,14 @@ it landed in, and keeps the guarantee honest in the reported output.
 
 The one thing it adds is a fallback.  Whether the partition fits inside the
 solver's limits depends on how the locations cluster, not just on how many there
-are — `region_cap * MAX_REGIONS` bounds the capacity, but regions rarely pack to
-the cap exactly, so a count below that bound can still fail.  Predicting from
-the location count alone was wrong and crashed in the high hundreds-of-locations
-range, so the partition is attempted and the geographic layer's greedy draft
-catches it if it cannot be formed.  None of the productions studied here comes
+are — `region_cap * MAX_REGIONS` bounds the capacity at 130 with the defaults,
+but regions rarely pack to the cap exactly, so counts well below that bound can
+still fail (uniformly scattered points first fail around 40 and always fail by
+80).  Predicting
+from the location count alone was wrong and crashed in that range, so the
+partition is attempted and the geographic layer's greedy draft catches a
+`PartitionError` if no partition can be formed.  Any other `ValueError` is a bad
+argument and is left to propagate.  None of the productions studied here comes
 close to that size.
 """
 
@@ -35,7 +38,8 @@ from typing import List, Optional
 
 from greedy import greedy_nearest_neighbor                # geographic layer
 
-from clustered_dp import DEFAULT_REGION_CAP, clustered_schedule
+from clustered_dp import (DEFAULT_REGION_CAP, PartitionError,
+                          clustered_schedule)
 from schedule_dp import EXACT_LIMIT, INF, ScheduleResult
 
 MODES = ("scheduled", "draft")
@@ -88,14 +92,18 @@ def solve(cost: List[List[float]],
         force_mode    : 'scheduled' or 'draft', to compare the two directly.
                         Forcing 'scheduled' lets a failed partition raise rather
                         than fall back silently.
-        region_cap    : Maximum locations per region.
+        region_cap    : Maximum locations per region.  Has no effect when the
+                        whole production already fits the exact solver, since
+                        there is then nothing to partition.
 
     Returns:
         SolveReport with the schedule, the number of regions used, the guarantee
         that holds for it, and the wall-clock time.
 
     Raises:
-        ValueError: If `force_mode` is not a known mode.
+        ValueError: If `force_mode` is not a known mode, if an argument is
+                    invalid, or if no schedule reaching every location exists
+                    because the cost matrix is disconnected.
     """
     if force_mode is not None and force_mode not in MODES:
         raise ValueError(f"Unknown mode {force_mode!r}; choose from {MODES}.")
@@ -107,6 +115,22 @@ def solve(cost: List[List[float]],
         try:
             res = clustered_schedule(cost, start=start, region_cap=region_cap,
                                      return_to_base=return_to_base)
+        except PartitionError:
+            # Too many locations to partition within the solver's limits.
+            # Every other ValueError is a bad argument and must not be swallowed:
+            # letting it through as a fallback produces a confusing failure deep
+            # inside the geographic layer instead of the message that names the
+            # offending argument.
+            if force_mode is not None:
+                raise
+        else:
+            if res.total_cost == INF:
+                # Some location is unreachable from the base, so no schedule
+                # covering all of them exists.  Reporting this as "optimal"
+                # would be a guarantee about a schedule that does not exist.
+                raise ValueError(
+                    "No schedule visits every location: the cost matrix is "
+                    "disconnected from the starting location.")
             regions = len(res.regions)
             guarantee = ("globally optimal (proven)" if regions == 1 else
                          "optimal within and between regions; "
@@ -114,10 +138,6 @@ def solve(cost: List[List[float]],
             return SolveReport(result=res, mode="scheduled", regions=regions,
                                guarantee=guarantee,
                                elapsed_ms=(time.perf_counter() - t0) * 1000.0)
-        except ValueError:
-            if force_mode is not None:
-                raise
-            # Too many locations to partition within the solver's limits.
 
     res = _greedy_draft(cost, start, return_to_base)
     return SolveReport(result=res, mode="draft", regions=0,

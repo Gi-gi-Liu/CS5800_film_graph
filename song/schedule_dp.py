@@ -62,7 +62,11 @@ class ScheduleResult:
         total_cost     : Total transition cost of the schedule.
         leg_costs      : leg_costs[k] is the cost of moving order[k] -> order[k+1].
         states_settled : Number of (subset, last-location) DP states actually
-                         relaxed.  Used for the empirical growth analysis.
+                         relaxed, used for the empirical growth analysis.  It
+                         counts the subset DP only: on a partitioned run it
+                         reports the region-level states and not the work inside
+                         path_cost_table, so it is a growth measure for the
+                         unpartitioned solver, not a total work count.
         n_locations    : Number of locations scheduled.
         closed         : True if the schedule returns to the starting base.
     """
@@ -116,8 +120,8 @@ def optimal_schedule(cost: List[List[float]],
         number of DP states settled.
 
     Raises:
-        ValueError: If the matrix is not square, `start`/`end` are out of range,
-                    or n exceeds EXACT_LIMIT.
+        ValueError: If the matrix is empty or not square, `start`/`end` are out
+                    of range, `end` equals `start`, or n exceeds EXACT_LIMIT.
     """
     n = len(cost)
     if n == 0:
@@ -130,6 +134,10 @@ def optimal_schedule(cost: List[List[float]],
         raise ValueError(f"start={start} out of range for {n} locations.")
     if end is not None and not (0 <= end < n):
         raise ValueError(f"end={end} out of range for {n} locations.")
+    if end is not None and end == start and n > 1:
+        # Checked here rather than after the DP: an invalid argument should not
+        # cost an exponential run first.
+        raise ValueError("end must differ from start for an open schedule.")
     if n > EXACT_LIMIT:
         raise ValueError(
             f"n={n} exceeds the exact-DP ceiling of {EXACT_LIMIT}. "
@@ -195,8 +203,6 @@ def optimal_schedule(cost: List[List[float]],
                 best_last = v
                 tail_cost = back
     elif end is not None:
-        if end == start:
-            raise ValueError("end must differ from start for an open schedule.")
         d = dp[full * n + end]
         if d < INF:
             best_cost, best_last = d, end
@@ -265,6 +271,14 @@ def path_cost_table(cost: List[List[float]],
         location indices.
     """
     m = len(members)
+    if m > EXACT_LIMIT:
+        # This does m Held-Karp runs, so it is m times more expensive than
+        # optimal_schedule at the same size — it needs the ceiling at least as
+        # much, and without one an oversized region_cap turns a 20 ms call into
+        # a multi-minute one.
+        raise ValueError(
+            f"group of {m} locations exceeds the exact-DP ceiling of "
+            f"{EXACT_LIMIT}; lower region_cap.")
     if m == 1:
         return [[0.0]], [[[members[0]]]]
 
@@ -400,8 +414,8 @@ if __name__ == "__main__":
     print("=" * 70)
 
     # ---- Test 1: hand-verifiable 4-location mock ----
-    # Same numbers as liu/test_data/toy_4node.txt, converted to a cost matrix
-    # (shortest paths, so 0<->2 costs 8 via node 1 rather than "no edge").
+    # A four-location cost matrix small enough to check by hand: 0<->2 costs 8
+    # via node 1, since there is no cheaper direct route.
     print("\n[1] Hand-checked 4-location mock")
     mock = [
         [0.0,  5.0,  8.0,  8.0],

@@ -62,11 +62,22 @@ from schedule_dp import (EXACT_LIMIT, INF, ScheduleResult, optimal_schedule,
 # bigger regions are solved more exactly, but "finish this region before moving
 # on" is a *constraint*, so making regions bigger makes that constraint bite
 # harder.  Measured across the three productions, cost is flat from cap 7 to 11
-# and degrades at 12 (La La Land 435 -> 443), while caps below 7 push Tenet past
-# the region limit.  10 sits in the middle of the flat band and is the fastest
-# setting for the largest production.
+# and degrades at 12 (La La Land 210.68 -> 217.73), while caps below 6 leave
+# Tenet needing more regions than MAX_REGIONS allows.  10 is inside that flat
+# band and is the smallest cap at which the largest production reaches its best
+# cost.
 DEFAULT_REGION_CAP = 10
 MAX_REGIONS = 13          # keeps the region-level 2^k DP cheap
+
+
+class PartitionError(ValueError):
+    """
+    Raised when the locations cannot be split into regions the solver can take.
+
+    A distinct type so callers can tell "this input is too large to partition",
+    which has a sensible fallback, apart from "this argument is wrong", which
+    does not.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -200,14 +211,14 @@ def find_regions(cost: List[List[float]], start: int = 0,
         if not oversized:
             break
         if len(regions) >= MAX_REGIONS:
-            raise ValueError(
+            raise PartitionError(
                 f"n={n} cannot be split into regions of at most {region_cap} "
                 f"locations within the {MAX_REGIONS}-region limit.")
         target = set(max(oversized, key=len))
         inside = [i for i, (_, a, b) in enumerate(heavy_first)
                   if i not in removed and a in target and b in target]
         if not inside:
-            raise ValueError("Cannot split an oversized region any further.")
+            raise PartitionError("Cannot split an oversized region any further.")
         removed.add(min(inside))        # heavy_first is sorted, so this is the
                                         # heaviest edge still inside the region
     return regions
@@ -404,12 +415,45 @@ def clustered_schedule(cost: List[List[float]],
 
 if __name__ == "__main__":
     import random
+    from itertools import permutations
+
     from schedule_dp import brute_force_schedule
 
     print("=" * 72)
-    print("  clustered_dp — one region must reproduce the exact optimum")
+    print("  clustered_dp self-test")
     print("=" * 72)
 
+    def block_oracle(cost, regions, start, closed):
+        """
+        Cheapest schedule that finishes each region before leaving it.
+
+        Enumerates every region order and every route within every region.
+        Exponential and useless in practice, which is the point: it is the
+        answer the region DP has to match.
+        """
+        home = next(i for i, g in enumerate(regions) if start in g)
+        others = [i for i in range(len(regions)) if i != home]
+        best = INF
+        for region_order in permutations(others):
+            for home_route in permutations([v for v in regions[home]
+                                            if v != start]):
+                stacks = [[start, *home_route]]
+                for r in region_order:
+                    stacks.append(None)
+                def walk(idx, seq):
+                    nonlocal best
+                    if idx == len(region_order):
+                        total = sum(cost[a][b] for a, b in zip(seq, seq[1:]))
+                        if closed:
+                            total += cost[seq[-1]][start]
+                        best = min(best, total)
+                        return
+                    for route in permutations(regions[region_order[idx]]):
+                        walk(idx + 1, seq + list(route))
+                walk(0, stacks[0])
+        return best
+
+    # ---- 1. Single region must reproduce the exact optimum ----
     rng = random.Random(5800)
     checks = mismatches = 0
     for n in range(2, 10):
@@ -419,37 +463,80 @@ if __name__ == "__main__":
                 for j in range(i + 1, n):
                     m[i][j] = m[j][i] = round(rng.uniform(1, 60), 2)
             for closed in (False, True):
-                # region_cap >= n forces a single region, so the partitioned
-                # machinery runs in full rather than short-circuiting.
-                # always_partition forces the region machinery to run rather
-                # than short-circuiting to the exact solver, so this really is
-                # testing the partitioned path.
-                partitioned = clustered_schedule(m, start=0, region_cap=n,
-                                                 return_to_base=closed,
-                                                 always_partition=True)
+                # always_partition keeps the region machinery in play instead
+                # of short-circuiting to the exact solver.
+                got = clustered_schedule(m, start=0, region_cap=n,
+                                         return_to_base=closed,
+                                         always_partition=True)
                 truth = brute_force_schedule(m, start=0, return_to_base=closed)
+                exact = optimal_schedule(m, start=0, return_to_base=closed)
                 checks += 1
-                walked = sum(m[partitioned.order[k]][partitioned.order[k + 1]]
-                             for k in range(len(partitioned.order) - 1))
-                if (abs(partitioned.total_cost - truth.total_cost) > 1e-9
-                        or abs(walked - partitioned.total_cost) > 1e-9):
+                walked = sum(m[got.order[k]][got.order[k + 1]]
+                             for k in range(len(got.order) - 1))
+                if closed:
+                    walked = sum(m[got.order[k]][got.order[k + 1]]
+                                 for k in range(len(got.order) - 1))
+                if (abs(got.total_cost - truth.total_cost) > 1e-9
+                        or abs(walked - got.total_cost) > 1e-9
+                        or list(got.order) != list(exact.order)):
                     mismatches += 1
-                    print(f"  MISMATCH n={n} closed={closed}: "
-                          f"{partitioned.total_cost} vs {truth.total_cost}")
-    print(f"\n  {checks} single-region cases vs exhaustive search, "
-          f"{mismatches} mismatches")
+                    print(f"  MISMATCH (1 region) n={n} closed={closed}")
+    print(f"\n  [1] one region vs exhaustive search, and vs optimal_schedule's")
+    print(f"      own order:  {checks} cases, {mismatches} mismatches")
 
-    # And the partition itself, on a map with obvious regions.
-    print("\n  Partitioning a map with three well-separated clusters:")
-    pts = [(0, 0), (1, 1), (2, 0), (0.5, 2),          # cluster A
-           (100, 0), (101, 1), (100.5, 2),            # cluster B
-           (50, 200), (51, 201)]                      # cluster C
+    # ---- 2. Several regions vs a block-constrained oracle ----
+    # This is the part the single-region case cannot reach: best_join, the
+    # region-level transitions, and the multi-step chain reconstruction.
+    rng = random.Random(1234)
+    mchecks = mmis = 0
+    region_counts = set()
+    for n in range(4, 9):
+        for _ in range(20):
+            m = [[0.0] * n for _ in range(n)]
+            for i in range(n):
+                for j in range(i + 1, n):
+                    m[i][j] = m[j][i] = round(rng.uniform(1, 60), 2)
+            for cap in (2, 3):
+                got = clustered_schedule(m, start=0, region_cap=cap,
+                                         always_partition=True)
+                regions = got.regions
+                region_counts.add(len(regions))
+                if len(regions) < 2:
+                    continue
+                truth = block_oracle(m, regions, 0, False)
+                mchecks += 1
+                walked = sum(m[got.order[k]][got.order[k + 1]]
+                             for k in range(len(got.order) - 1))
+                if (abs(got.total_cost - truth) > 1e-9
+                        or abs(walked - got.total_cost) > 1e-9
+                        or sorted(got.order) != list(range(n))):
+                    mmis += 1
+                    print(f"  MISMATCH (multi) n={n} cap={cap}: "
+                          f"{got.total_cost} vs {truth}")
+    print(f"  [2] {mchecks} multi-region cases vs a block-constrained oracle, "
+          f"{mmis} mismatches")
+    print(f"      region counts exercised: {sorted(region_counts)}")
+
+    # ---- 3. Partitioning a map with obvious regions ----
+    print("\n  [3] three well-separated clusters:")
+    pts = [(0, 0), (1, 1), (2, 0), (0.5, 2),
+           (100, 0), (101, 1), (100.5, 2),
+           (50, 200), (51, 201)]
     n = len(pts)
     dist = [[((pts[i][0] - pts[j][0]) ** 2
               + (pts[i][1] - pts[j][1]) ** 2) ** 0.5
              for j in range(n)] for i in range(n)]
     for r in sorted(find_regions(dist, region_cap=5), key=len, reverse=True):
-        print(f"    {r}")
-    sched = clustered_schedule(dist, start=0, region_cap=5)
-    print(f"  order {sched.order}  cost {sched.total_cost:.2f}")
-    print("\n  RESULT:", "PASS" if mismatches == 0 else "FAIL")
+        print(f"      {r}")
+    # always_partition, or n=9 would fit the exact solver and this would print
+    # Held-Karp's answer while appearing to demonstrate the partitioned path.
+    sched = clustered_schedule(dist, start=0, region_cap=5,
+                               always_partition=True)
+    exact = optimal_schedule(dist, start=0)
+    print(f"      partitioned    order {sched.order}  cost {sched.total_cost:.2f}")
+    print(f"      unpartitioned                    cost {exact.total_cost:.2f}"
+          f"   ({(sched.total_cost - exact.total_cost) / exact.total_cost:+.2%}"
+          f" for keeping the blocks together)")
+
+    ok = mismatches == 0 and mmis == 0 and max(region_counts) >= 2
+    print("\n  RESULT:", "PASS" if ok else "FAIL")

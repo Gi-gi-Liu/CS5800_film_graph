@@ -97,8 +97,11 @@ def run_pipeline(key: str, return_to_base: bool = False) -> None:
 
     moves = sum(1 for a, b in zip(res.order, res.order[1:])
                 if nodes[a].city != nodes[b].city)
+    # An open schedule crosses between places g-1 times at best; a closed one
+    # has to come home, so it needs g.
+    fewest = len(groups) if return_to_base else len(groups) - 1
     print(f"\n  Moved between places {moves} times "
-          f"(fewest possible: {len(groups) - 1}).")
+          f"(fewest possible: {fewest}).")
 
     draft = greedy_nearest_neighbor(cost, start=0)
     if not return_to_base and draft.total_cost > res.total_cost:
