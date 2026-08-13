@@ -204,7 +204,50 @@ location, target region, exit slot) triple, so the transition itself is `O(1)`.
 Both exponents are now on small numbers, the region count and region size,
 instead of on the location count.
 
-### 2.4 Testing
+### 2.4 Inputs, outputs, and testing
+
+**Inputs.** Every entry point takes the same arguments:
+
+| Argument | Meaning |
+|---|---|
+| `cost` | an n x n matrix; `cost[i][j]` is the cheapest cost of moving the crew from location *i* to location *j*, produced by the geographic layer's `all_pairs_shortest_paths` |
+| `start` | index of the base camp, default 0 |
+| `return_to_base` | whether the crew returns to `start` at wrap, default False |
+| `region_cap` | maximum locations per region, default 10; no effect when the whole production already fits the exact solver |
+
+From the command line, `main.py <production>` takes a production key instead —
+`la_la_land`, `forrest_gump` or `tenet` — and builds that matrix itself from
+`film_data.py`.
+
+**Outputs.** Every solver returns a `ScheduleResult`:
+
+| Field | Meaning |
+|---|---|
+| `order` | the shooting order as location indices; the base appears again at the end if the schedule is closed |
+| `total_cost` | the sum of the legs |
+| `leg_costs` | the cost of each individual move |
+| `regions` | the regions used, empty on an unpartitioned run |
+| `states_settled` | (subset, last-location) states relaxed by the subset DP |
+| `n_locations`, `closed` | the size of the instance, and whether it returns to base |
+
+`solve()` wraps that in a `SolveReport`, which records how the answer was
+reached: `mode`, the number of `regions`, the `guarantee` that holds for it,
+and `elapsed_ms`.
+
+A run of `python main.py la_la_land` therefore reports
+
+```
+[2] Scheduling layer
+    regions   : 9
+    guarantee : optimal within and between regions; the partition is
+                the only approximation
+    solved in : 6.6 ms
+```
+
+followed by the 26-row shooting order and the cost of every move.
+
+**Testing.** Three suites, each comparing the scheduler's answer against
+exhaustive enumeration of every permutation.
 
 **Correctness of the exact solver.** Cross-checked against exhaustive
 enumeration of every permutation, which is obviously correct and obviously too

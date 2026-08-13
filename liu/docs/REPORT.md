@@ -189,7 +189,19 @@ GREEDY_NEAREST_NEIGHBOR(cost_matrix, start, scenes):
 
 ---
 
-### 2.4 Testing
+### 2.4 Inputs, Outputs, and Testing
+
+**Inputs:**
+- `graph` — a `SpatialGraph`; each node carries a terrain type and an elevation, and each edge carries the composite weight from Section 2.1. Graphs come from the generators in `data_gen.py`: `create_film_benchmark(n_scenes)`, `generate_toy_graph(n, seed)`, and `generate_sparse_graph(n, edge_prob, seed)`
+- `source` / `start` — index of the node to start from, normally the basecamp at index 0
+- `dist_matrix` — for the greedy heuristic, the n × n all-pairs matrix Dijkstra produced, not the raw edge weights
+- `scene_indices` — optional subset of nodes to schedule; defaults to all of them
+
+**Outputs:**
+- `dijkstra(graph, source)` returns a `DijkstraResult`: `dist` (cheapest cost to every node), `prev` (predecessors, for path reconstruction), `visited_count`, `heap_pushes`, and `source`
+- `all_pairs_shortest_paths(graph)` returns the n × n cost matrix. This is the single value the scheduling layer consumes as `C_loc`
+- `shortest_path(graph, source, target)` returns `(path, cost)`, where `path` is the node sequence from source to target and is empty when the target is unreachable
+- `greedy_nearest_neighbor(dist_matrix, start)` returns a `GreedyResult`: `order` (the visit order), `total_cost`, and `cost_breakdown` (the cost of each step)
 
 **Unit tests (toy graphs):**
 - Hand-traced Dijkstra on 4-node graph; verified shortest paths match manual BFS traversal
